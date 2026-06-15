@@ -1,0 +1,58 @@
+{
+  // ==========================================================================
+  // Tackticus — game metadata
+  // Edit fields marked with TODO once a BGA Studio account / publisher info exists.
+  // See: https://en.doc.boardgamearena.com/Game_meta-information:_gameinfos.inc.php
+  // ==========================================================================
+
+  "game_name": "Tackticus",
+  "publisher": "",
+  "publisher_website": "",
+  "publisher_bgg_id": 0,
+
+  // 0 means "no BGG entry yet" — fine for development.
+  "bgg_id": 0,
+
+  "designer": "",
+  "artist": "",
+  "year": 2026,
+
+  // 1 player is enabled to make solo testing faster during development.
+  // Remove `1` before publishing.
+  "players": [1, 2],
+
+  "suggest_player_number": [2],
+  "not_recommend_player_number": [],
+
+  // Estimated game length in minutes per player count.
+  "estimated_duration": 8,
+  "fast_additional_time": 30,
+  "medium_additional_time": 60,
+  "slow_additional_time": 120,
+
+  "tie_breaker_description": "Player with more remaining pieces wins ties",
+
+  // Player colors — Red and Blue. Two-player game.
+  "losers_not_ranked": false,
+  "solo_mode_ranked": false,
+  "is_coop": 0,
+  "is_beta": 1,
+  "is_sandbox": 0,
+
+  "complexity": 1,
+  "strategy": 4,
+  "luck": 1,
+  "diplomacy": 1,
+
+  "player_colors": ["e94e3b", "3b6ee9"],
+
+  // Categories: see https://en.doc.boardgamearena.com/Reference:_gameinfos.inc.php
+  "presentation": [
+    "A small, sharp 2-player tactical abstract.",
+    "Move one piece per turn. Flank an enemy between two of yours to capture it.",
+    "First to 4 captures wins."
+  ],
+
+  // Translations — single-language for now.
+  "languages": ["en"]
+}

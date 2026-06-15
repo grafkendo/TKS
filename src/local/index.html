@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tackticus — local</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body>
+    <div id="app">
+      <header class="tk-header">
+        <h1>Tackticus</h1>
+        <p class="tk-subtitle">Local hot-seat — two players, one screen.</p>
+      </header>
+
+      <main class="tk-main">
+        <aside class="tk-side" id="tk-status">
+          <div class="tk-player" data-player="1">
+            <span class="tk-dot tk-dot-1"></span>
+            <span class="tk-pname">Red</span>
+            <span class="tk-pcaps">Captures: <b id="caps-1">0</b></span>
+          </div>
+          <div class="tk-player" data-player="2">
+            <span class="tk-dot tk-dot-2"></span>
+            <span class="tk-pname">Blue</span>
+            <span class="tk-pcaps">Captures: <b id="caps-2">0</b></span>
+          </div>
+          <div class="tk-turn" id="tk-turn"></div>
+          <button id="tk-new" class="tk-btn">New game</button>
+          <button id="tk-undo" class="tk-btn tk-btn-secondary">Undo</button>
+        </aside>
+
+        <section class="tk-board-wrap">
+          <div id="tk-board" class="tk-board"></div>
+        </section>
+      </main>
+
+      <footer class="tk-footer">
+        <p>
+          Click one of your pieces, then click a highlighted square to move.
+          Flank an enemy piece between two of yours (orthogonally) to capture it.
+          First to <span id="tk-capwin">4</span> captures wins.
+        </p>
+      </footer>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

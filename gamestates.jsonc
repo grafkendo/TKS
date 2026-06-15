@@ -1,0 +1,55 @@
+{
+  // ==========================================================================
+  // Tackticus — Finite State Machine
+  //
+  // States declared here are also implemented as PHP classes in
+  // modules/php/States/*.php (modern framework, 2024+).
+  //
+  // Framework-reserved IDs:
+  //   1  = gameSetup (entry)
+  //   99 = gameEnd   (terminal)
+  //
+  // Flow:  gameSetup -> PlayerTurn (10) <-> NextPlayer (90) -> gameEnd
+  // ==========================================================================
+
+  "1": {
+    "name": "gameSetup",
+    "description": "",
+    "type": "manager",
+    "action": "stGameSetup",
+    "transitions": { "": 10 }
+  },
+
+  "10": {
+    "name": "PlayerTurn",
+    "description": "${actplayer} must move a piece",
+    "descriptionmyturn": "${you} must move a piece",
+    "type": "activeplayer",
+    "args": "argPlayerTurn",
+    "possibleactions": ["actMovePiece"],
+    "transitions": {
+      "moveComplete": 90,
+      "gameEnd": 99
+    }
+  },
+
+  "90": {
+    "name": "NextPlayer",
+    "description": "",
+    "type": "game",
+    "action": "stNextPlayer",
+    "updateGameProgression": true,
+    "transitions": {
+      "nextTurn": 10,
+      "endGame": 99
+    }
+  },
+
+  "99": {
+    "name": "gameEnd",
+    "description": "End of game",
+    "type": "manager",
+    "action": "stGameEnd",
+    "args": "argGameEnd"
+  }
+}

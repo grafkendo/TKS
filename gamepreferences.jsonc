@@ -1,0 +1,26 @@
+{
+  // ==========================================================================
+  // Tackticus — Per-player UI preferences (saved per account)
+  // IDs 200+ by convention.
+  // ==========================================================================
+
+  "200": {
+    "name": "Highlight legal moves",
+    "needReload": false,
+    "values": {
+      "1": { "name": "Yes (recommended)" },
+      "2": { "name": "No" }
+    },
+    "default": 1
+  },
+
+  "201": {
+    "name": "Capture animations",
+    "needReload": false,
+    "values": {
+      "1": { "name": "Animate (default)" },
+      "2": { "name": "Instant" }
+    },
+    "default": 1
+  }
+}

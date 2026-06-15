@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tackticus</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f4efe6;
+        color: #1f1f1f;
+        margin: 0;
+        padding: 48px 24px;
+      }
+      .wrap { max-width: 720px; margin: 0 auto; }
+      h1   { font-size: 36px; margin: 0 0 4px; letter-spacing: -0.02em; }
+      .sub { color: #666; margin: 0 0 32px; }
+      .card {
+        display: block;
+        text-decoration: none;
+        color: inherit;
+        padding: 20px 24px;
+        background: white;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        margin-bottom: 14px;
+        transition: transform 0.1s ease, box-shadow 0.1s ease;
+      }
+      .card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
+      .card h2 { margin: 0 0 4px; font-size: 19px; }
+      .card p  { margin: 0; color: #555; font-size: 14px; line-height: 1.5; }
+      .tag {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        margin-right: 8px;
+      }
+      .tag-v0 { background: #fff2c4; color: #6c4f00; }
+      .tag-new { background: #c4ecff; color: #003a6c; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Tackticus</h1>
+      <p class="sub">Two builds, one rules engine. Pick a target:</p>
+
+      <a class="card" href="./3d/index.html">
+        <h2><span class="tag tag-new">NEW</span>3D mech demo</h2>
+        <p>
+          Three.js, three-quarter view, procedural low-poly mechs.
+          Build target for the new direction. Architecture supports
+          textured glTF + shader FX swap-in later.
+        </p>
+      </a>
+
+      <a class="card" href="./local/index.html">
+        <h2><span class="tag tag-v0">RULES SANDBOX</span>2D hot-seat</h2>
+        <p>
+          The flank-capture abstract. Fast to iterate on rules without
+          paying the 3D rendering cost. Keep using this to test new
+          combat mechanics before plumbing them into 3D.
+        </p>
+      </a>
+    </div>
+  </body>
+</html>

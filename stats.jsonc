@@ -1,0 +1,44 @@
+{
+  // ==========================================================================
+  // Tackticus — Player & Table Statistics
+  //
+  // Recorded during play and shown on the end-of-game stats screen.
+  // Per BGA convention, IDs 10-99 are user stats, 1-9 are reserved.
+  // ==========================================================================
+
+  "table": {
+    "turns_number": {
+      "id": 10,
+      "name": "Number of turns",
+      "type": "int"
+    },
+    "captures_total": {
+      "id": 11,
+      "name": "Total captures in game",
+      "type": "int"
+    }
+  },
+
+  "player": {
+    "moves_made": {
+      "id": 10,
+      "name": "Pieces moved",
+      "type": "int"
+    },
+    "captures_made": {
+      "id": 11,
+      "name": "Pieces captured",
+      "type": "int"
+    },
+    "pieces_lost": {
+      "id": 12,
+      "name": "Pieces lost",
+      "type": "int"
+    },
+    "edge_moves": {
+      "id": 13,
+      "name": "Moves along the edge",
+      "type": "int"
+    }
+  }
+}

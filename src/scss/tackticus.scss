@@ -1,0 +1,83 @@
+// ============================================================================
+// Tackticus — styles
+// Compiled to tackticus.css at project root (where BGA expects it).
+// ============================================================================
+
+$board-bg: #1f2a30;
+$square-light: #d6c5a3;
+$square-dark: #8a6b3a;
+$piece-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+$accent: #ffce4d;
+$danger: #ff4d4d;
+
+.tk-board {
+  position: relative;
+  margin: 16px auto;
+  background-color: $board-bg;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+.tk-square {
+  position: absolute;
+  width: var(--tk-square-size, 80px);
+  height: var(--tk-square-size, 80px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  box-sizing: border-box;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+
+  &.tk-light { background-color: $square-light; }
+  &.tk-dark  { background-color: $square-dark; }
+
+  &.legal-destination {
+    cursor: pointer;
+    box-shadow: inset 0 0 0 4px $accent;
+
+    &::after {
+      content: '';
+      width: 24%;
+      height: 24%;
+      border-radius: 50%;
+      background-color: $accent;
+      opacity: 0.7;
+    }
+  }
+}
+
+.tk-piece {
+  width: 70%;
+  height: 70%;
+  border-radius: 50%;
+  box-shadow: $piece-shadow;
+  border: 2px solid rgba(0, 0, 0, 0.25);
+  position: relative;
+  z-index: 2;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, opacity 0.4s ease;
+
+  &.selectable {
+    cursor: pointer;
+    box-shadow: $piece-shadow, 0 0 0 3px rgba(255, 206, 77, 0.65);
+  }
+
+  &.selectable:hover {
+    transform: scale(1.06);
+  }
+
+  &.selected {
+    box-shadow: $piece-shadow, 0 0 0 4px $accent;
+    transform: scale(1.08);
+  }
+
+  &.captured {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+}
+
+// Status bar tweaks --------------------------------------------------------
+#tackticus-statusbar {
+  text-align: center;
+  font-weight: 600;
+}

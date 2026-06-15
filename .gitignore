@@ -1,0 +1,12 @@
+node_modules/
+modules/js/
+tackticus.css
+*.log
+.DS_Store
+.vscode/sftp.json
+.idea/
+dist/
+build/
+.vitest-cache/
+.vite/
+coverage/

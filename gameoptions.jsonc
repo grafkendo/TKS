@@ -1,0 +1,18 @@
+{
+  // ==========================================================================
+  // Tackticus — Game Setup Options
+  // (visible to table creator before the game starts)
+  // IDs 100-199 are conventional for custom game options.
+  // ==========================================================================
+
+  "100": {
+    "name": "Captures to win",
+    "description": "How many enemy pieces must you capture to win?",
+    "values": {
+      "3": { "name": "3 captures (short)" },
+      "4": { "name": "4 captures (standard)", "tmdisplay": "First to 4" },
+      "5": { "name": "5 captures (long)" }
+    },
+    "default": "4"
+  }
+}

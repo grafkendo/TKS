@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tackticus 3D — mech demo</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root { --bg: #0c1116; --panel: #1a232b; --text: #e6eaef; --accent: #ffce4d; }
+      html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      #app { position: relative; height: 100vh; }
+      #stage { width: 100%; height: 100%; display: block; }
+      .hud {
+        position: absolute;
+        top: 12px; left: 12px;
+        background: rgba(26,35,43,0.85);
+        backdrop-filter: blur(8px);
+        padding: 12px 16px;
+        border-radius: 8px;
+        min-width: 220px;
+        font-size: 13px;
+      }
+      .hud h1 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+      .hud p  { margin: 4px 0; color: #aab2bd; line-height: 1.5; }
+      .hud kbd {
+        background: #2a3742; color: #e6eaef; border-radius: 3px;
+        padding: 1px 5px; font-size: 11px; font-family: ui-monospace, monospace;
+      }
+      .hud .home { display: inline-block; margin-top: 8px; color: var(--accent); text-decoration: none; font-weight: 600; }
+      .stats {
+        position: absolute; top: 12px; right: 12px;
+        background: rgba(26,35,43,0.85); backdrop-filter: blur(8px);
+        padding: 8px 12px; border-radius: 8px;
+        font-family: ui-monospace, monospace; font-size: 12px;
+        color: #aab2bd;
+      }
+      .status {
+        position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+        background: rgba(26,35,43,0.85); backdrop-filter: blur(8px);
+        padding: 10px 18px; border-radius: 999px;
+        font-size: 13px; min-width: 200px; max-width: 70%; text-align: center;
+      }
+      .turn-info {
+        position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+        background: rgba(26,35,43,0.85); backdrop-filter: blur(8px);
+        padding: 10px 22px; border-radius: 8px;
+        font-size: 14px; font-weight: 500;
+        display: flex; align-items: center; gap: 14px;
+      }
+      .turn-info button {
+        background: var(--accent); color: #1a232b;
+        border: none; padding: 6px 14px; border-radius: 6px;
+        font-weight: 600; cursor: pointer; font-size: 12px;
+      }
+      .turn-info button:hover { filter: brightness(1.08); }
+      .turn-info button:active { filter: brightness(0.92); }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="stage"></canvas>
+
+      <div class="hud">
+        <h1>Tackticus 3D — urban warfare</h1>
+        <p>Each mech: <b>3 AP/turn</b>.</p>
+        <p>Move = 1 AP (clear) / 2 AP (rubble) · Shoot = 1 AP</p>
+        <p>Click a <span style="color:#3bd4a4;font-weight:600">green hex</span> to move (cost shown).</p>
+        <p>Click a <span style="color:#ff5c6c;font-weight:600">red target</span> to fire (range 1-2).</p>
+        <p style="color:#aab2bd">Shots through buildings deal <b>half damage</b>. Rubble = 1 shot.</p>
+        <p><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>Wheel</kbd> zoom</p>
+        <p style="color:#777;margin-top:8px;font-size:11px">
+          Devtools:<br/>
+          <code>tackticus.applyApModifier('r1','blitz',+3)</code><br/>
+          <code>tackticus.applyDamageModifier('r1','heavy',+1)</code><br/>
+          <code>tackticus.endTurn()</code> · <code>tackticus.units()</code>
+        </p>
+        <a class="home" href="../index.html">← back</a>
+      </div>
+
+      <div class="turn-info">
+        <span id="turn-info">Turn 1 — Red team</span>
+        <button id="end-turn-btn">End Turn</button>
+      </div>
+
+      <div class="stats" id="stats">— FPS</div>
+      <div class="status" id="status">Select a unit</div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
