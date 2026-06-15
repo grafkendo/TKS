@@ -35,10 +35,66 @@
         color: #aab2bd;
       }
       .status {
-        position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+        position: absolute; bottom: 132px; left: 50%; transform: translateX(-50%);
         background: rgba(26,35,43,0.85); backdrop-filter: blur(8px);
         padding: 10px 18px; border-radius: 999px;
         font-size: 13px; min-width: 200px; max-width: 70%; text-align: center;
+      }
+      .dashboard {
+        position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+        display: flex; gap: 10px;
+        max-width: calc(100% - 24px);
+      }
+      .dash-slot {
+        background: rgba(26,35,43,0.92); backdrop-filter: blur(8px);
+        padding: 9px 12px 10px; border-radius: 8px;
+        width: 196px;
+        border: 1px solid rgba(255,255,255,0.06);
+        cursor: pointer;
+        transition: border-color 0.12s, transform 0.08s;
+        user-select: none;
+      }
+      .dash-slot:hover { border-color: rgba(255,206,77,0.35); }
+      .dash-slot.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+      .dash-slot.immobilised { border-color: #7a6b3a; }
+      .dash-slot.destroyed { opacity: 0.35; cursor: not-allowed; }
+      .dash-slot.destroyed:hover { border-color: rgba(255,255,255,0.06); }
+      .dash-slot.locked { cursor: not-allowed; }
+      .dash-name {
+        font-size: 11px; font-weight: 600; color: #cfd5dd;
+        margin-bottom: 6px; letter-spacing: 0.5px;
+        display: flex; justify-content: space-between; align-items: center; gap: 6px;
+      }
+      .dash-name .tag {
+        font-size: 9px; padding: 1px 5px; border-radius: 3px;
+        background: rgba(255,255,255,0.08); color: #aab2bd;
+        font-weight: 500; letter-spacing: 0.5px;
+      }
+      .dash-name .tag.immobilised { background: rgba(122,107,58,0.35); color: #ffce4d; }
+      .dash-name .tag.destroyed   { background: rgba(255,90,90,0.18);  color: #ff9b9b; }
+      .dash-bar { display: flex; align-items: center; gap: 7px; margin: 3px 0; font-size: 11px; }
+      .dash-bar > label { color: #8a93a0; min-width: 18px; }
+      .dash-bar .bar { flex: 1; height: 6px; background: #131a21; border-radius: 4px; overflow: hidden; }
+      .dash-bar .fill { height: 100%; transition: width 0.18s ease-out; }
+      .dash-hp .fill { background: linear-gradient(90deg, #e54a4a 0%, #ff7a7a 100%); }
+      .dash-ap .fill { background: linear-gradient(90deg, #4dabff 0%, #7ac8ff 100%); }
+      .dash-bar > span { color: #aab2bd; min-width: 32px; text-align: right; font-variant-numeric: tabular-nums; }
+      .dash-loadout {
+        display: flex; gap: 6px; margin-top: 6px;
+        flex-wrap: wrap;
+      }
+      .dash-loadout .weapon {
+        font-size: 10px; color: #cfd5dd;
+        background: rgba(255,255,255,0.06);
+        padding: 2px 7px; border-radius: 3px;
+        letter-spacing: 0.3px;
+      }
+      .dash-empty {
+        width: 196px; min-height: 78px;
+        border: 1px dashed rgba(255,255,255,0.08);
+        border-radius: 8px;
+        display: flex; align-items: center; justify-content: center;
+        color: #4f5862; font-size: 11px; letter-spacing: 0.5px;
       }
       .turn-info {
         position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
@@ -54,6 +110,21 @@
       }
       .turn-info button:hover { filter: brightness(1.08); }
       .turn-info button:active { filter: brightness(0.92); }
+      .turn-info button:disabled {
+        background: #3a4754; color: #6a7785; cursor: not-allowed; filter: none;
+      }
+      .game-over {
+        position: absolute; top: 28%; left: 50%; transform: translate(-50%, -50%);
+        background: rgba(12, 17, 22, 0.92); backdrop-filter: blur(10px);
+        padding: 28px 56px; border-radius: 14px;
+        font-size: 36px; font-weight: 700; letter-spacing: 1px;
+        text-transform: uppercase; text-align: center;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+        pointer-events: none;
+        z-index: 10;
+      }
+      .game-over[hidden] { display: none; }
     </style>
   </head>
   <body>
@@ -62,17 +133,21 @@
 
       <div class="hud">
         <h1>Tackticus 3D — urban warfare</h1>
-        <p>Each mech: <b>3 AP/turn</b>.</p>
-        <p>Move = 1 AP (clear) / 2 AP (rubble) · Shoot = 1 AP</p>
+        <p>You play <span style="color:#ff7a7a;font-weight:600">Red</span>; Blue is computer-controlled.</p>
+        <p>Each mech: <b>3 AP/turn</b>. Move = 1 AP (clear) / 2 AP (rubble) · Shoot = 1 AP</p>
         <p>Click a <span style="color:#3bd4a4;font-weight:600">green hex</span> to move (cost shown).</p>
         <p>Click a <span style="color:#ff5c6c;font-weight:600">red target</span> to fire (range 1-2).</p>
         <p style="color:#aab2bd">Shots through buildings deal <b>half damage</b>. Rubble = 1 shot.</p>
-        <p><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>Wheel</kbd> zoom</p>
+        <p style="color:#aab2bd">From a platform looking down: <b>+1 damage</b> (high ground).</p>
+        <p style="color:#ffce4d">Win when the enemy team is all destroyed or immobilised.</p>
+        <p><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>T</kbd> top-down · <kbd>Wheel</kbd> zoom</p>
         <p style="color:#777;margin-top:8px;font-size:11px">
           Devtools:<br/>
           <code>tackticus.applyApModifier('r1','blitz',+3)</code><br/>
           <code>tackticus.applyDamageModifier('r1','heavy',+1)</code><br/>
-          <code>tackticus.endTurn()</code> · <code>tackticus.units()</code>
+          <code>tackticus.immobilise('b1')</code> · <code>tackticus.release('b1')</code><br/>
+          <code>tackticus.setController(2,'human')</code> — disable AI<br/>
+          <code>tackticus.endTurn()</code> · <code>tackticus.winner()</code>
         </p>
         <a class="home" href="../index.html">← back</a>
       </div>
@@ -82,8 +157,11 @@
         <button id="end-turn-btn">End Turn</button>
       </div>
 
+      <div class="game-over" id="game-over" hidden></div>
+
       <div class="stats" id="stats">— FPS</div>
       <div class="status" id="status">Select a unit</div>
+      <div class="dashboard" id="dashboard"></div>
     </div>
 
     <script type="module" src="./main.ts"></script>

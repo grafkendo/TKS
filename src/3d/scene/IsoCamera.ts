@@ -7,8 +7,8 @@
 //
 // Features:
 //   - Smooth zoom via mouse wheel
-//   - Q/E to rotate around the target (snap to 90° increments by default,
-//     or hold Shift for free continuous rotation)
+//   - Q/E to rotate around the target (snap to 90° increments by default)
+//   - T toggles between 3/4 iso view and a near-top-down "tactical map" view
 //   - Right-click drag to pan
 //
 // All driven from a (target, distance, yaw, pitch) state so any future
@@ -29,7 +29,12 @@ export interface IsoCameraOptions {
   yawDeg?: number;
 }
 
+export type CameraView = 'iso' | 'top';
+
 const SNAP_DEG = 90;
+// Just under 90° to avoid the lookAt gimbal lock when the up vector lines
+// up with the view direction. Still reads as "looking straight down".
+const TOP_PITCH_DEG = 88;
 
 export class IsoCamera {
   readonly camera: THREE.OrthographicCamera;
@@ -38,8 +43,12 @@ export class IsoCamera {
   private zoom: number;
   private pitchDeg: number;
   private yawDeg: number;
-  private targetYawDeg: number; // for smooth snap rotation
+  /** Pitch the user originally configured — used as the "iso" pole. */
+  private isoPitchDeg: number;
+  private targetYawDeg: number;
+  private targetPitchDeg: number;
   private targetZoom: number;
+  private currentView: CameraView = 'iso';
   private canvas: HTMLCanvasElement;
   private removeListeners: () => void;
 
@@ -48,7 +57,9 @@ export class IsoCamera {
     this.target = (opts.target ?? new THREE.Vector3(0, 0, 0)).clone();
     this.zoom = opts.zoom ?? 8;
     this.targetZoom = this.zoom;
-    this.pitchDeg = opts.pitchDeg ?? 40;
+    this.isoPitchDeg = opts.pitchDeg ?? 40;
+    this.pitchDeg = this.isoPitchDeg;
+    this.targetPitchDeg = this.isoPitchDeg;
     this.yawDeg = opts.yawDeg ?? 45;
     this.targetYawDeg = this.yawDeg;
 
@@ -58,10 +69,11 @@ export class IsoCamera {
     this.updateCameraTransform();
   }
 
-  /** Frame-update — smooth interpolation toward target yaw / zoom. */
+  /** Frame-update — smooth interpolation toward target yaw / pitch / zoom. */
   tick(dt: number): void {
     const lerpRate = 1 - Math.exp(-dt * 10);
     this.yawDeg += (this.targetYawDeg - this.yawDeg) * lerpRate;
+    this.pitchDeg += (this.targetPitchDeg - this.pitchDeg) * lerpRate;
     this.zoom += (this.targetZoom - this.zoom) * lerpRate;
     this.updateCameraTransform();
   }
@@ -79,6 +91,21 @@ export class IsoCamera {
 
   setZoom(z: number): void {
     this.targetZoom = Math.max(2, Math.min(40, z));
+  }
+
+  /** Smoothly snap pitch to a named preset. */
+  setView(view: CameraView): void {
+    this.currentView = view;
+    this.targetPitchDeg = view === 'top' ? TOP_PITCH_DEG : this.isoPitchDeg;
+  }
+
+  getView(): CameraView {
+    return this.currentView;
+  }
+
+  toggleView(): CameraView {
+    this.setView(this.currentView === 'iso' ? 'top' : 'iso');
+    return this.currentView;
   }
 
   dispose(): void {
@@ -122,8 +149,12 @@ export class IsoCamera {
       this.setZoom(this.targetZoom + Math.sign(e.deltaY) * 1.2);
     };
     const onKey = (e: KeyboardEvent) => {
+      // Ignore when typing in inputs (none today, but defensive).
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if (e.key === 'q' || e.key === 'Q') this.rotate(-SNAP_DEG);
       else if (e.key === 'e' || e.key === 'E') this.rotate(SNAP_DEG);
+      else if (e.key === 't' || e.key === 'T') this.toggleView();
     };
     this.canvas.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('keydown', onKey);

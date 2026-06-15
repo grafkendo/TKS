@@ -11,6 +11,18 @@
 //  - If a shot's hex line passes through a destructible building, damage
 //    is HALVED per building crossed.
 //  - Shooting rubble (1 HP) clears it and opens the path.
+//  - HIGH GROUND: when the shooter is on elevated terrain (a platform) AND
+//    the target is lower than them, the attack does +1 damage. The bonus
+//    is added BEFORE the cover multiplier — high-ground through cover is
+//    `(base + 1) * 0.5`.
+//
+// WIN CONDITION
+// -------------
+//  - A team is defeated when EVERY one of its mechs is either destroyed
+//    OR immobilised. The other team wins (or it's a draw on mutual wipe).
+//  - Immobilised mechs cannot move and cannot shoot, but still occupy
+//    their hex. They count as "out" for win-condition purposes.
+//  - Pure rule logic lives in ./rules/winCondition.ts and is unit tested.
 //
 // All numeric attributes (maxAp, maxHp, attackRange, damage) are Stats with
 // the same modifier architecture, so you can buff or debuff them from the
@@ -43,6 +55,7 @@ import { buildUrbanMap } from './maps/urban';
 import { createTerrainFromSpec } from './terrain/factory';
 import { Rubble } from './terrain/Rubble';
 import type { TerrainPiece } from './terrain/types';
+import { evaluateOutcome, type GameOutcome } from './rules/winCondition';
 
 // ----- Tunables ------------------------------------------------------------
 
@@ -64,6 +77,11 @@ const statusEl = document.getElementById('status') as HTMLDivElement;
 const statsEl = document.getElementById('stats') as HTMLDivElement;
 const turnInfoEl = document.getElementById('turn-info') as HTMLDivElement;
 const endTurnBtn = document.getElementById('end-turn-btn') as HTMLButtonElement;
+const gameOverEl = document.getElementById('game-over') as HTMLDivElement;
+const dashboardEl = document.getElementById('dashboard') as HTMLDivElement;
+
+/** Up to N controlled-mech slots shown in the bottom dashboard. */
+const DASHBOARD_SLOTS = 3;
 
 const stage = new Stage(canvas);
 const isoCam = new IsoCamera(canvas, {
@@ -135,6 +153,8 @@ interface Unit {
   team: 1 | 2;
   chassis: ChassisType;
   destroyed: boolean;
+  /** Alive but unable to move OR shoot. Counts as "out" for win condition. */
+  immobilised: boolean;
   facingDeg: number;
 
   // Attributes (Stats — modifiable via devtools)
@@ -205,6 +225,7 @@ async function placeMech(spec: {
     team: spec.team,
     chassis: spec.chassis,
     destroyed: false,
+    immobilised: false,
     facingDeg: spec.facingDeg,
     maxAp,
     maxHp,
@@ -226,6 +247,7 @@ async function placeMech(spec: {
   await placeMech({ id: 'b2', chassis: 'medium', team: 2, weaponRight: 'missiles', weaponLeft: 'beam',    tile: SPAWN.b2, facingDeg: 90 });
 
   renderTurnInfo();
+  renderDashboard();
   setStatus("Red team's turn. Click a mech to select.");
 })();
 
@@ -234,13 +256,29 @@ async function placeMech(spec: {
 let currentTeam: 1 | 2 = 1;
 let turnNumber = 1;
 
+/** Who's at the controls for each team. */
+type TeamController = 'human' | 'ai';
+const teamControllers: Record<1 | 2, TeamController> = { 1: 'human', 2: 'ai' };
+
+/** True while the AI is processing its turn. Locks player input. */
+let aiActive = false;
+
 function endTurn(): void {
   if (mode === 'animating') return;
+  if (gameOver) return;
+  if (aiActive) return; // AI will end its own turn
+  doEndTurn();
+}
+
+/** Internal — the actual turn-flip logic, callable by both UI + AI. */
+function doEndTurn(): void {
+  if (gameOver) return;
   // Switch teams; turnNumber increments only when blue → red wraps.
   currentTeam = currentTeam === 1 ? 2 : 1;
   if (currentTeam === 1) turnNumber += 1;
 
-  // Refill AP for the new active team.
+  // Refill AP for the new active team (immobilised mechs still refill, but
+  // they can't spend it — kept for symmetry if they become un-immobilised).
   for (const u of units) {
     if (u.team === currentTeam && !u.destroyed) {
       u.ap = u.maxAp.effective;
@@ -260,7 +298,18 @@ function endTurn(): void {
   }
 
   renderTurnInfo();
+  renderDashboard();
   setStatus(`${teamName(currentTeam)} team's turn. Click a mech to play.`);
+
+  // Defensive: if a state change before this turn-end somehow missed the
+  // win-check (e.g. an immobilise via devtools), catch it here.
+  checkWinCondition();
+  if (gameOver) return;
+
+  // Hand off to the AI if the new active team is computer-controlled.
+  if (teamControllers[currentTeam] === 'ai') {
+    void runAiTurn();
+  }
 }
 endTurnBtn.addEventListener('click', endTurn);
 
@@ -270,7 +319,88 @@ function teamName(team: 1 | 2): string {
 
 function renderTurnInfo(): void {
   const color = currentTeam === 1 ? '#ff7a7a' : '#7aa8ff';
-  turnInfoEl.innerHTML = `Turn ${turnNumber} — <span style="color:${color};font-weight:600">${teamName(currentTeam)} team</span>`;
+  const tag = teamControllers[currentTeam] === 'ai' ? ' <span style="color:#ffce4d;font-size:11px">[AI]</span>' : '';
+  turnInfoEl.innerHTML = `Turn ${turnNumber} — <span style="color:${color};font-weight:600">${teamName(currentTeam)} team</span>${tag}`;
+}
+
+// ----- Win condition -------------------------------------------------------
+
+let gameOver: GameOutcome & { ended: true } | null = null;
+
+/**
+ * Visually mark `u` as immobilised. Reversible via `unmarkImmobilised`.
+ * Tilts the chassis on its Z axis to suggest a busted leg.
+ */
+function markImmobilised(u: Unit): void {
+  u.mech.object.rotation.z = 0.18;
+  u.mech.playAnimation('idle');
+}
+function unmarkImmobilised(u: Unit): void {
+  u.mech.object.rotation.z = 0;
+}
+
+function immobiliseUnit(u: Unit): void {
+  if (u.destroyed || u.immobilised) return;
+  u.immobilised = true;
+  markImmobilised(u);
+  // If currently selected, repaint to clear movement/attack highlights.
+  if (selectedId === u.id) {
+    recomputeReachable(u);
+    refreshTileVisuals(null);
+  }
+  renderDashboard();
+  checkWinCondition();
+}
+
+function releaseUnit(u: Unit): void {
+  if (u.destroyed || !u.immobilised) return;
+  u.immobilised = false;
+  unmarkImmobilised(u);
+  if (selectedId === u.id) {
+    recomputeReachable(u);
+    refreshTileVisuals(null);
+  }
+  renderDashboard();
+}
+
+/**
+ * Re-evaluate the win condition. If the game has just ended, lock all
+ * input by setting `gameOver` and render the victory banner.
+ */
+function checkWinCondition(): void {
+  if (gameOver) return; // already over — don't flip-flop on later events
+  const outcome = evaluateOutcome(units);
+  if (!outcome.ended) return;
+
+  gameOver = outcome;
+  endTurnBtn.disabled = true;
+  deselect();
+  board.clearAllStates();
+  renderGameOver();
+  renderDashboard();
+
+  const text =
+    outcome.winner === 'draw'
+      ? `Mutual destruction. Draw on turn ${turnNumber}.`
+      : `${teamName(outcome.winner)} team wins on turn ${turnNumber}!`;
+  setStatus(text);
+}
+
+function renderGameOver(): void {
+  if (!gameOver) {
+    gameOverEl.hidden = true;
+    gameOverEl.textContent = '';
+    return;
+  }
+  const w = gameOver.winner;
+  if (w === 'draw') {
+    gameOverEl.textContent = 'DRAW — mutual destruction';
+    gameOverEl.style.color = '#e6eaef';
+  } else {
+    gameOverEl.textContent = `${teamName(w)} team wins`;
+    gameOverEl.style.color = w === 1 ? '#ff7a7a' : '#7aa8ff';
+  }
+  gameOverEl.hidden = false;
 }
 
 // ----- Interaction state machine -------------------------------------------
@@ -285,12 +415,12 @@ let reachableForSelected: Map<string, number> = new Map();
 
 picker.setEvents({
   onTileHover(tile) {
-    if (mode === 'animating') return;
+    if (mode === 'animating' || gameOver || aiActive) return;
     refreshTileVisuals(tile);
   },
 
   onUnitClick(unitId) {
-    if (mode === 'animating') return;
+    if (mode === 'animating' || gameOver || aiActive) return;
 
     const target = units.find((u) => u.id === unitId);
     if (!target || target.destroyed) return;
@@ -321,11 +451,11 @@ picker.setEvents({
       return;
     }
 
-    fireAtUnit(shooter, target);
+    void fireAtUnit(shooter, target);
   },
 
   onTerrainClick(terrainId) {
-    if (mode === 'animating') return;
+    if (mode === 'animating' || gameOver || aiActive) return;
     const terrain = terrainPieces.find((t) => t.id === terrainId);
     if (!terrain || terrain.destroyed) return;
 
@@ -334,11 +464,11 @@ picker.setEvents({
       setStatus(`${describeTerrain(terrain)}. Select one of your mechs first.`);
       return;
     }
-    fireAtTerrain(shooter, terrain);
+    void fireAtTerrain(shooter, terrain);
   },
 
   onTileClick(tile) {
-    if (mode === 'animating') return;
+    if (mode === 'animating' || gameOver || aiActive) return;
 
     const shooter = selectedId ? units.find((u) => u.id === selectedId) : null;
     if (!shooter || shooter.destroyed) {
@@ -362,19 +492,20 @@ function selectUnit(unit: Unit): void {
   mode = 'selected';
   recomputeReachable(unit);
   refreshTileVisuals(null);
+  renderDashboard();
   setStatus(describeSelection(unit));
 }
 
 function describeSelection(unit: Unit): string {
-  return (
+  const head =
     `${describeUnit(unit)} — ` +
     `AP ${unit.ap}/${unit.maxAp.effective}, ` +
     `HP ${unit.hp}/${unit.maxHp.effective}, ` +
-    `range ${unit.attackRange.effective}, dmg ${unit.damage.effective}. ` +
-    (unit.ap > 0
-      ? `Green = move, red = fire.`
-      : `Out of AP — end the turn.`)
-  );
+    `range ${unit.attackRange.effective}, dmg ${unit.damage.effective}. `;
+  if (unit.immobilised) return head + `IMMOBILISED — cannot act this game.`;
+  return head + (unit.ap > 0
+    ? `Green = move, red = fire.`
+    : `Out of AP — end the turn.`);
 }
 
 function deselect(): void {
@@ -382,32 +513,41 @@ function deselect(): void {
   mode = 'idle';
   reachableForSelected = new Map();
   board.clearAllStates();
+  renderDashboard();
 }
 
 function recomputeReachable(unit: Unit): void {
+  if (unit.immobilised) {
+    // Start hex only — no other reachable tiles.
+    reachableForSelected = new Map([[hexKey(unit.tile), 0]]);
+    return;
+  }
   const pf = makePathfinder(unit);
   reachableForSelected = pf.reachable(unit.tile, unit.ap);
 }
 
 function refreshTileVisuals(hover: HexCoord | null): void {
   board.clearAllStates();
+  if (gameOver) return;
 
   const sel = selectedId ? units.find((u) => u.id === selectedId) : null;
 
-  // Green: reachable hexes
-  for (const k of reachableForSelected.keys()) {
-    const [qs, rs] = k.split('_');
-    const h: HexCoord = { q: parseInt(qs, 10), r: parseInt(rs, 10) };
+  // Green: reachable hexes (skipped entirely for immobilised mechs).
+  if (sel && !sel.immobilised) {
+    for (const k of reachableForSelected.keys()) {
+      const [qs, rs] = k.split('_');
+      const h: HexCoord = { q: parseInt(qs, 10), r: parseInt(rs, 10) };
 
-    if (sel && hexEquals(sel.tile, h)) continue;
-    if (unitAt(h)) continue;
-    if (blockingTerrainAt(h)) continue;
-    board.setTileState(h, 'move');
+      if (hexEquals(sel.tile, h)) continue;
+      if (unitAt(h)) continue;
+      if (blockingTerrainAt(h)) continue;
+      board.setTileState(h, 'move');
+    }
   }
 
-  // Red: enemies + destructible terrain in attack range (and only if the
-  // selected unit still has AP to fire).
-  if (sel && sel.ap >= AP_COST.shoot) {
+  // Red: enemies + destructible terrain in attack range (only if the
+  // selected unit has AP AND isn't immobilised).
+  if (sel && !sel.immobilised && sel.ap >= AP_COST.shoot) {
     const range = sel.attackRange.effective;
     for (const target of units) {
       if (target.destroyed || target.team === sel.team) continue;
@@ -442,6 +582,11 @@ function describeTerrain(t: TerrainPiece): string {
 // ----- Movement ------------------------------------------------------------
 
 async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
+  if (gameOver) return;
+  if (unit.immobilised) {
+    setStatus(`${describeUnit(unit)} is immobilised and cannot move.`);
+    return;
+  }
   const pf = makePathfinder(unit);
   const path = pf.findPath(unit.tile, dest, unit.ap);
   if (!path || path.length === 0) return;
@@ -464,6 +609,7 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
     await animateStep(unit, step);
     unit.tile = step;
     unit.ap -= apCostToEnter(step);
+    renderDashboard();
   }
 
   unit.mech.playAnimation('idle');
@@ -471,6 +617,7 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
   mode = 'selected';
   recomputeReachable(unit);
   refreshTileVisuals(null);
+  renderDashboard();
   setStatus(describeSelection(unit));
 }
 
@@ -524,7 +671,20 @@ function coverMultiplier(from: HexCoord, to: HexCoord): { mult: number; building
   return { mult, buildingsCrossed };
 }
 
-function fireAtUnit(shooter: Unit, target: Unit): void {
+/**
+ * High-ground bonus: shooter is on elevated terrain AND target is lower.
+ * Returns the integer damage bonus (0 or +1 for now).
+ */
+function highGroundBonus(shooter: Unit, target: Unit): number {
+  return elevationAt(shooter.tile) > elevationAt(target.tile) ? 1 : 0;
+}
+
+async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
+  if (gameOver) return;
+  if (shooter.immobilised) {
+    setStatus(`${describeUnit(shooter)} is immobilised and cannot fire.`);
+    return;
+  }
   if (shooter.ap < AP_COST.shoot) {
     setStatus(`${describeUnit(shooter)} has no AP to fire.`);
     return;
@@ -537,45 +697,58 @@ function fireAtUnit(shooter: Unit, target: Unit): void {
   }
 
   const { mult, buildingsCrossed } = coverMultiplier(shooter.tile, target.tile);
-  const damage = shooter.damage.effective * mult;
+  const hg = highGroundBonus(shooter, target);
+  const damage = (shooter.damage.effective + hg) * mult;
   shooter.ap -= AP_COST.shoot;
+  renderDashboard();
 
-  faceAndFire(shooter, target.mech.object.position, () => {
-    const torsoTgt = target.mech.getAttachPoint('torso');
-    if (!torsoTgt) return;
-    const targetWorld = new THREE.Vector3();
+  await faceAndFire(shooter, target.mech.object.position);
+
+  const torsoTgt = target.mech.getAttachPoint('torso');
+  const targetWorld = new THREE.Vector3();
+  if (torsoTgt) {
     torsoTgt.getWorldPosition(targetWorld);
     fx.impact({ position: targetWorld });
-    target.mech.playAnimation('hit');
+  }
+  target.mech.playAnimation('hit');
 
-    target.hp = Math.max(0, target.hp - damage);
-    target.mech.setDamageLevel(
-      Math.min(1, (target.maxHp.effective - target.hp) / target.maxHp.effective),
+  target.hp = Math.max(0, target.hp - damage);
+  target.mech.setDamageLevel(
+    Math.min(1, (target.maxHp.effective - target.hp) / target.maxHp.effective),
+  );
+
+  const dmgStr = formatDamage(damage);
+  const modBits: string[] = [];
+  if (hg > 0) modBits.push('from high ground (+1)');
+  if (buildingsCrossed > 0) {
+    modBits.push(`through ${buildingsCrossed} building${buildingsCrossed > 1 ? 's' : ''} (half damage)`);
+  }
+  const modStr = modBits.length > 0 ? ` ${modBits.join(', ')}` : '';
+
+  if (target.hp <= 0) {
+    target.destroyed = true;
+    if (torsoTgt) fx.explosion({ position: targetWorld, scale: 1.4 });
+    target.mech.playAnimation('destroyed');
+    setStatus(`${describeUnit(target)} destroyed by ${describeUnit(shooter)}${modStr}.`);
+    sinkUnitWreckage(target);
+  } else {
+    setStatus(
+      `${describeUnit(shooter)} hits ${describeUnit(target)} for ${dmgStr}${modStr}. ` +
+      `(HP ${target.hp}/${target.maxHp.effective})`,
     );
+  }
 
-    const dmgStr = formatDamage(damage);
-    const coverStr = buildingsCrossed > 0
-      ? ` through ${buildingsCrossed} building${buildingsCrossed > 1 ? 's' : ''} (half damage)`
-      : '';
-
-    if (target.hp <= 0) {
-      target.destroyed = true;
-      fx.explosion({ position: targetWorld, scale: 1.4 });
-      target.mech.playAnimation('destroyed');
-      setStatus(`${describeUnit(target)} destroyed by ${describeUnit(shooter)}${coverStr}.`);
-      sinkUnitWreckage(target);
-    } else {
-      setStatus(
-        `${describeUnit(shooter)} hits ${describeUnit(target)} for ${dmgStr}${coverStr}. ` +
-        `(HP ${target.hp}/${target.maxHp.effective})`,
-      );
-    }
-
-    refreshAfterAction();
-  });
+  refreshAfterAction();
+  renderDashboard();
+  checkWinCondition();
 }
 
-function fireAtTerrain(shooter: Unit, terrain: TerrainPiece): void {
+async function fireAtTerrain(shooter: Unit, terrain: TerrainPiece): Promise<void> {
+  if (gameOver) return;
+  if (shooter.immobilised) {
+    setStatus(`${describeUnit(shooter)} is immobilised and cannot fire.`);
+    return;
+  }
   if (terrain.hp === undefined) {
     setStatus(`${terrain.kind} is indestructible.`);
     return;
@@ -592,30 +765,32 @@ function fireAtTerrain(shooter: Unit, terrain: TerrainPiece): void {
   }
 
   // No cover penalty for shooting *at* terrain (we're not shooting through it).
+  // No high-ground bonus on terrain either — that's a vs-unit perk.
   const damage = shooter.damage.effective;
   shooter.ap -= AP_COST.shoot;
+  renderDashboard();
 
   const tBox = new THREE.Box3().setFromObject(terrain.object);
   const impactWorld = new THREE.Vector3();
   tBox.getCenter(impactWorld);
 
-  faceAndFire(shooter, impactWorld, () => {
-    fx.impact({ position: impactWorld });
-    const wasDestroyed = terrain.takeDamage(damage);
-    if (wasDestroyed) {
-      fx.explosion({ position: impactWorld, scale: 1.2 });
-      const verb = terrain.kind === 'rubble' ? 'cleared' : 'destroyed';
-      setStatus(`${describeUnit(shooter)} ${verb} the ${terrain.kind}.`);
-      replaceWithRubble(terrain);
-    } else {
-      setStatus(
-        `${describeUnit(shooter)} damaged the ${terrain.kind} ` +
-        `(HP ${terrain.hp}/${terrain.maxHp}).`,
-      );
-    }
+  await faceAndFire(shooter, impactWorld);
 
-    refreshAfterAction();
-  });
+  fx.impact({ position: impactWorld });
+  const wasDestroyed = terrain.takeDamage(damage);
+  if (wasDestroyed) {
+    fx.explosion({ position: impactWorld, scale: 1.2 });
+    const verb = terrain.kind === 'rubble' ? 'cleared' : 'destroyed';
+    setStatus(`${describeUnit(shooter)} ${verb} the ${terrain.kind}.`);
+    replaceWithRubble(terrain);
+  } else {
+    setStatus(
+      `${describeUnit(shooter)} damaged the ${terrain.kind} ` +
+      `(HP ${terrain.hp}/${terrain.maxHp}).`,
+    );
+  }
+
+  refreshAfterAction();
 }
 
 function refreshAfterAction(): void {
@@ -632,7 +807,13 @@ function formatDamage(d: number): string {
   return Number.isInteger(d) ? `${d}` : `${d.toFixed(1)}`;
 }
 
-function faceAndFire(shooter: Unit, targetWorldPos: THREE.Vector3, onHit: () => void): void {
+/**
+ * Animate the shooter facing + firing. Resolves ~120ms after the trigger,
+ * which is the right moment to apply damage and spawn the impact FX.
+ * Always resolves — even if the mech has no rightHand attach point, so
+ * callers can safely `await` it without risk of a dangling promise.
+ */
+function faceAndFire(shooter: Unit, targetWorldPos: THREE.Vector3): Promise<void> {
   const sp = shooter.mech.object.position;
   const dx = targetWorldPos.x - sp.x;
   const dz = targetWorldPos.z - sp.z;
@@ -642,15 +823,15 @@ function faceAndFire(shooter: Unit, targetWorldPos: THREE.Vector3, onHit: () => 
   shooter.mech.playAnimation('fire');
 
   const barrel = shooter.mech.getAttachPoint('rightHand');
-  if (!barrel) return;
-  const barrelWorld = new THREE.Vector3();
-  barrel.getWorldPosition(barrelWorld);
+  if (barrel) {
+    const barrelWorld = new THREE.Vector3();
+    barrel.getWorldPosition(barrelWorld);
+    const dir = targetWorldPos.clone().sub(barrelWorld).normalize();
+    fx.muzzleFlash({ position: barrelWorld, direction: dir });
+    fx.beam({ from: barrelWorld, to: targetWorldPos, durationSec: 0.18, color: '#fff2a8' });
+  }
 
-  const dir = targetWorldPos.clone().sub(barrelWorld).normalize();
-  fx.muzzleFlash({ position: barrelWorld, direction: dir });
-  fx.beam({ from: barrelWorld, to: targetWorldPos, durationSec: 0.18, color: '#fff2a8' });
-
-  setTimeout(onHit, 120);
+  return new Promise((resolve) => setTimeout(resolve, 120));
 }
 
 function sinkUnitWreckage(target: Unit): void {
@@ -675,6 +856,7 @@ function sinkUnitWreckage(target: Unit): void {
         picker.unregisterUnit(target.id);
         removeTicker();
         refreshAfterAction();
+        renderDashboard();
       }
     });
   }, 200);
@@ -702,6 +884,225 @@ function replaceWithRubble(terrain: TerrainPiece): void {
   terrainPieces.push(rubble);
 }
 
+// ----- Player dashboard ----------------------------------------------------
+//
+// A bottom strip of up to DASHBOARD_SLOTS cards, one per controlled mech.
+// Each card shows the mech's identity, HP/AP bars, and equipped weapons
+// ("inventory" for now — extend this struct as more loadout items appear).
+// Click a card to select that mech (equivalent to clicking it on the board).
+// ---------------------------------------------------------------------------
+
+/** Which team's mechs appear in the dashboard. */
+let dashboardTeam: 1 | 2 = 1;
+
+function unitWeapons(u: Unit): string[] {
+  const cfg = u.mech.config;
+  return [cfg.weaponRight, cfg.weaponLeft].filter((w): w is NonNullable<typeof w> => Boolean(w));
+}
+
+function renderDashboard(): void {
+  // Show controlled mechs (defaulting to team 1 / Red). Capped to DASHBOARD_SLOTS.
+  const slots = units
+    .filter((u) => u.team === dashboardTeam)
+    .slice(0, DASHBOARD_SLOTS);
+
+  dashboardEl.innerHTML = '';
+
+  for (const u of slots) {
+    const slot = document.createElement('div');
+    slot.className = 'dash-slot';
+    slot.dataset.unitId = u.id;
+
+    const isSelected = u.id === selectedId;
+    if (isSelected) slot.classList.add('selected');
+    if (u.destroyed) slot.classList.add('destroyed');
+    else if (u.immobilised) slot.classList.add('immobilised');
+
+    const playerTurn = teamControllers[currentTeam] === 'human' && currentTeam === u.team;
+    const clickable = !u.destroyed && !gameOver && !aiActive && playerTurn;
+    if (!clickable) slot.classList.add('locked');
+
+    const maxHp = u.maxHp.effective;
+    const maxAp = u.maxAp.effective;
+    const hpPct = maxHp > 0 ? Math.max(0, (u.hp / maxHp) * 100) : 0;
+    const apPct = maxAp > 0 ? Math.max(0, (u.ap / maxAp) * 100) : 0;
+
+    const weapons = unitWeapons(u);
+    const weaponHtml = weapons.length === 0
+      ? '<span class="weapon" style="opacity:0.5">no weapons</span>'
+      : weapons.map((w) => `<span class="weapon">${w}</span>`).join('');
+
+    const statusTag = u.destroyed
+      ? '<span class="tag destroyed">DESTROYED</span>'
+      : u.immobilised
+        ? '<span class="tag immobilised">IMMOBILE</span>'
+        : `<span class="tag">${u.chassis.toUpperCase()}</span>`;
+
+    slot.innerHTML = `
+      <div class="dash-name">
+        <span>${teamName(u.team)} ${u.id.toUpperCase()}</span>
+        ${statusTag}
+      </div>
+      <div class="dash-bar dash-hp">
+        <label>HP</label>
+        <div class="bar"><div class="fill" style="width:${hpPct}%"></div></div>
+        <span>${formatDamage(u.hp)}/${maxHp}</span>
+      </div>
+      <div class="dash-bar dash-ap">
+        <label>AP</label>
+        <div class="bar"><div class="fill" style="width:${apPct}%"></div></div>
+        <span>${u.ap}/${maxAp}</span>
+      </div>
+      <div class="dash-loadout">${weaponHtml}</div>
+    `;
+
+    if (clickable) {
+      slot.addEventListener('click', () => {
+        if (mode === 'animating' || gameOver || aiActive) return;
+        selectUnit(u);
+      });
+    }
+
+    dashboardEl.appendChild(slot);
+  }
+
+  // Pad to DASHBOARD_SLOTS so layout stays stable as mechs die / spawn.
+  for (let i = slots.length; i < DASHBOARD_SLOTS; i++) {
+    const empty = document.createElement('div');
+    empty.className = 'dash-empty';
+    empty.textContent = '— empty slot —';
+    dashboardEl.appendChild(empty);
+  }
+}
+
+// ----- AI controller -------------------------------------------------------
+//
+// Dead-simple heuristic that's still readable: for each active mech, find
+// the nearest enemy. If in range and we have AP, shoot. Otherwise step
+// toward them along the cheapest reachable hex that shortens hex-distance.
+// Repeat until out of AP or no useful move exists, then end the turn.
+//
+// Animations are awaited end-to-end so each action plays out fully before
+// the next one starts (no overlapping muzzle flashes / chaotic movement).
+// ---------------------------------------------------------------------------
+
+const AI_THINK_MS = 450;     // pause between AI actions
+const AI_PRE_TURN_MS = 350;  // initial "thinking" pause when AI takes over
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function runAiTurn(): Promise<void> {
+  if (aiActive || gameOver) return;
+  aiActive = true;
+  endTurnBtn.disabled = true;
+  setStatus(`${teamName(currentTeam)} AI is thinking…`);
+  renderDashboard();
+
+  try {
+    await delay(AI_PRE_TURN_MS);
+
+    // Snapshot the team's mechs at start-of-turn; new ones can't spawn mid-turn.
+    const aiUnits = units.filter(
+      (u) => u.team === currentTeam && !u.destroyed,
+    );
+
+    for (const mech of aiUnits) {
+      if (gameOver) break;
+      if (mech.destroyed || mech.immobilised) continue;
+      await aiPlayMech(mech);
+    }
+  } finally {
+    aiActive = false;
+    endTurnBtn.disabled = gameOver !== null;
+    renderDashboard();
+  }
+
+  if (gameOver) return;
+  await delay(AI_THINK_MS);
+  doEndTurn();
+}
+
+async function aiPlayMech(mech: Unit): Promise<void> {
+  // Up to a generous step cap to guarantee termination even with bugs.
+  for (let safety = 0; safety < 20; safety++) {
+    if (gameOver) return;
+    if (mech.destroyed || mech.immobilised) return;
+    if (mech.ap <= 0) return;
+
+    const target = nearestEnemy(mech);
+    if (!target) return;
+
+    const dist = hexDistance(mech.tile, target.tile);
+    const range = mech.attackRange.effective;
+
+    // 1) In range & can afford a shot → fire.
+    if (dist <= range && mech.ap >= AP_COST.shoot) {
+      await delay(AI_THINK_MS);
+      if (gameOver) return;
+      await fireAtUnit(mech, target);
+      continue;
+    }
+
+    // 2) Try to move toward the target.
+    const moved = await aiTryMoveToward(mech, target);
+    if (!moved) return;
+  }
+}
+
+function nearestEnemy(mech: Unit): Unit | null {
+  let best: Unit | null = null;
+  let bestDist = Infinity;
+  for (const u of units) {
+    if (u.team === mech.team) continue;
+    if (u.destroyed || u.immobilised) continue;
+    const d = hexDistance(mech.tile, u.tile);
+    if (d < bestDist) {
+      bestDist = d;
+      best = u;
+    }
+  }
+  return best;
+}
+
+/**
+ * Walks `mech` one step closer to `target` if any reachable hex strictly
+ * reduces the hex-distance to the target. Returns true if a move happened.
+ */
+async function aiTryMoveToward(mech: Unit, target: Unit): Promise<boolean> {
+  const pf = makePathfinder(mech);
+  const reach = pf.reachable(mech.tile, mech.ap);
+
+  let bestHex: HexCoord | null = null;
+  let bestDist = hexDistance(mech.tile, target.tile);
+  let bestCost = Infinity;
+
+  for (const [k, cost] of reach) {
+    if (cost === 0) continue; // start hex
+    const [qs, rs] = k.split('_');
+    const h: HexCoord = { q: parseInt(qs, 10), r: parseInt(rs, 10) };
+    if (unitAt(h)) continue;
+    if (blockingTerrainAt(h)) continue;
+
+    const d = hexDistance(h, target.tile);
+    // Prefer "closer to target" first, "cheaper" as tie-breaker. Don't move
+    // somewhere that doesn't get us any closer — that's just wasting AP.
+    if (d < bestDist || (d === bestDist && cost < bestCost)) {
+      bestDist = d;
+      bestHex = h;
+      bestCost = cost;
+    }
+  }
+
+  if (!bestHex) return false;
+
+  await delay(AI_THINK_MS);
+  if (gameOver) return false;
+  await walkUnitTo(mech, bestHex);
+  return true;
+}
+
 // ----- Devtools console hooks ----------------------------------------------
 
 interface StatSnapshot {
@@ -712,7 +1113,8 @@ interface StatSnapshot {
 
 interface TackticusApi {
   units(): Array<{
-    id: string; chassis: ChassisType; team: 1 | 2; tile: HexCoord; destroyed: boolean;
+    id: string; chassis: ChassisType; team: 1 | 2; tile: HexCoord;
+    destroyed: boolean; immobilised: boolean;
     ap: number; hp: number;
     maxAp: StatSnapshot; maxHp: StatSnapshot; damage: StatSnapshot; attackRange: StatSnapshot;
   }>;
@@ -722,6 +1124,19 @@ interface TackticusApi {
   }>;
   turn(): { number: number; team: 1 | 2 };
   endTurn(): void;
+  /** Mark a unit as immobilised (alive but can't act). Triggers win check. */
+  immobilise(unitId: string): boolean;
+  /** Un-immobilise a unit (devtools only — no in-game mechanic yet). */
+  release(unitId: string): boolean;
+  isGameOver(): boolean;
+  winner(): 1 | 2 | 'draw' | null;
+  /** Get/set who's at the controls for a team. Default: 1=human, 2=ai. */
+  controller(team: 1 | 2): TeamController;
+  setController(team: 1 | 2, c: TeamController): void;
+  /** Show a different team's mechs in the bottom dashboard. */
+  setDashboardTeam(team: 1 | 2): void;
+  /** Snap the camera to top-down or iso (also via the T key). */
+  setView(view: 'iso' | 'top'): void;
   applyApModifier(unitId: string, source: string, delta: number, label?: string): boolean;
   applyHpModifier(unitId: string, source: string, delta: number, label?: string): boolean;
   applyDamageModifier(unitId: string, source: string, delta: number, label?: string): boolean;
@@ -748,7 +1163,8 @@ function repaintIfSelected(unitId: string): void {
 const api: TackticusApi = {
   units: () =>
     units.map((u) => ({
-      id: u.id, chassis: u.chassis, team: u.team, tile: u.tile, destroyed: u.destroyed,
+      id: u.id, chassis: u.chassis, team: u.team, tile: u.tile,
+      destroyed: u.destroyed, immobilised: u.immobilised,
       ap: u.ap, hp: u.hp,
       maxAp: snapshot(u.maxAp),
       maxHp: snapshot(u.maxHp),
@@ -763,6 +1179,39 @@ const api: TackticusApi = {
     })),
   turn: () => ({ number: turnNumber, team: currentTeam }),
   endTurn: () => endTurn(),
+
+  immobilise(unitId) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u) return false;
+    immobiliseUnit(u);
+    return true;
+  },
+  release(unitId) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u) return false;
+    releaseUnit(u);
+    return true;
+  },
+  isGameOver: () => gameOver !== null,
+  winner: () => (gameOver ? gameOver.winner : null),
+
+  controller: (team) => teamControllers[team],
+  setController(team, c) {
+    teamControllers[team] = c;
+    renderTurnInfo();
+    renderDashboard();
+    // If we just handed control of the *current* team to the AI, kick it off.
+    if (team === currentTeam && c === 'ai' && !aiActive && !gameOver) {
+      void runAiTurn();
+    }
+  },
+  setDashboardTeam(team) {
+    dashboardTeam = team;
+    renderDashboard();
+  },
+  setView(view) {
+    isoCam.setView(view);
+  },
 
   applyApModifier(unitId, source, delta, label) {
     const u = units.find((x) => x.id === unitId);
@@ -795,12 +1244,14 @@ const api: TackticusApi = {
     if (!u) return false;
     u.ap = Math.max(0, ap);
     repaintIfSelected(u.id);
+    renderDashboard();
     return true;
   },
   setHp(unitId, hp) {
     const u = units.find((x) => x.id === unitId);
     if (!u) return false;
     u.hp = Math.max(0, hp);
+    renderDashboard();
     return true;
   },
   damageTerrain(terrainId, amount) {
