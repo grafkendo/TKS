@@ -72,6 +72,15 @@
       }
       .dash-name .tag.immobilised { background: rgba(122,107,58,0.35); color: #ffce4d; }
       .dash-name .tag.destroyed   { background: rgba(255,90,90,0.18);  color: #ff9b9b; }
+      .dash-name .tag.crate {
+        background: rgba(255,206,77,0.22); color: #ffce4d;
+        box-shadow: 0 0 0 1px rgba(255,206,77,0.45) inset;
+        animation: cratePulse 1.4s ease-in-out infinite;
+      }
+      @keyframes cratePulse {
+        0%, 100% { filter: brightness(0.85); }
+        50%      { filter: brightness(1.3); }
+      }
       .dash-bar { display: flex; align-items: center; gap: 7px; margin: 3px 0; font-size: 11px; }
       .dash-bar > label { color: #8a93a0; min-width: 18px; }
       .dash-bar .bar { flex: 1; height: 6px; background: #131a21; border-radius: 4px; overflow: hidden; }
@@ -79,16 +88,35 @@
       .dash-hp .fill { background: linear-gradient(90deg, #e54a4a 0%, #ff7a7a 100%); }
       .dash-ap .fill { background: linear-gradient(90deg, #4dabff 0%, #7ac8ff 100%); }
       .dash-bar > span { color: #aab2bd; min-width: 32px; text-align: right; font-variant-numeric: tabular-nums; }
-      .dash-loadout {
-        display: flex; gap: 6px; margin-top: 6px;
-        flex-wrap: wrap;
+      .inv-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 4px;
+        margin-top: 6px;
+        padding-top: 6px;
+        border-top: 1px solid rgba(255,255,255,0.06);
       }
-      .dash-loadout .weapon {
-        font-size: 10px; color: #cfd5dd;
-        background: rgba(255,255,255,0.06);
-        padding: 2px 7px; border-radius: 3px;
-        letter-spacing: 0.3px;
+      .inv-cell {
+        aspect-ratio: 1 / 1;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 4px;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 14px; font-weight: 700;
+        color: #6a7785;
+        font-family: ui-monospace, monospace;
+        line-height: 1;
+        user-select: none;
+        transition: filter 0.1s, transform 0.06s;
       }
+      .inv-cell.hand     { box-shadow: inset 0 -2px 0 rgba(255,138,61,0.4); }
+      .inv-cell.backpack { box-shadow: inset 0 -2px 0 rgba(122,168,255,0.25); }
+      .inv-cell.empty    { background: rgba(0,0,0,0.18); color: #2f3640; }
+      .inv-cell.usable   { cursor: pointer; }
+      .inv-cell.usable:hover { filter: brightness(1.35); transform: scale(1.06); }
+      .inv-cell.usable:active { transform: scale(0.96); }
+      .dash-head { cursor: pointer; }
+      .dash-slot.locked .dash-head { cursor: default; }
       .dash-empty {
         width: 196px; min-height: 78px;
         border: 1px dashed rgba(255,255,255,0.08);
@@ -125,6 +153,85 @@
         z-index: 10;
       }
       .game-over[hidden] { display: none; }
+
+      /* Item reveal card — slides in from the right edge when a crate is opened. */
+      .item-card {
+        position: absolute;
+        top: 56px;
+        right: 12px;
+        width: 264px;
+        background: rgba(12,17,22,0.94);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 10px;
+        padding: 12px 14px 12px;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,206,77,0.10);
+        font-size: 12px;
+        line-height: 1.45;
+        pointer-events: none;
+        opacity: 0;
+        transform: translateX(20px);
+        transition: opacity 0.22s ease-out, transform 0.22s ease-out;
+        z-index: 8;
+      }
+      .item-card.visible {
+        opacity: 1;
+        transform: translateX(0);
+      }
+      .item-card-flash {
+        font-size: 10px;
+        letter-spacing: 2px;
+        color: var(--accent);
+        font-weight: 700;
+        margin-bottom: 8px;
+        text-transform: uppercase;
+      }
+      .item-card-row {
+        display: flex; align-items: center; gap: 12px;
+        margin-bottom: 8px;
+      }
+      .item-card-icon {
+        width: 42px; height: 42px;
+        border-radius: 8px;
+        border: 2px solid #fff;
+        display: flex; align-items: center; justify-content: center;
+        font-family: ui-monospace, monospace;
+        font-weight: 700;
+        font-size: 18px;
+        background: rgba(0,0,0,0.35);
+      }
+      .item-card-title { flex: 1; min-width: 0; }
+      .item-card-name {
+        font-size: 14px; font-weight: 700; letter-spacing: 0.3px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .item-card-kind {
+        font-size: 9.5px; letter-spacing: 1.5px;
+        color: #6a7785;
+        margin-top: 2px;
+      }
+      .item-card-desc {
+        color: #cfd5dd;
+        font-size: 12px;
+        margin: 4px 0 6px;
+      }
+      .item-card-stats {
+        list-style: none;
+        margin: 6px 0 0;
+        padding: 6px 0 0;
+        border-top: 1px solid rgba(255,255,255,0.06);
+      }
+      .item-card-stats li {
+        color: #a8efb3;
+        font-family: ui-monospace, monospace;
+        font-size: 11.5px;
+        padding: 1px 0;
+      }
+      .item-card-stowed {
+        margin-top: 7px; padding-top: 6px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        color: #8a93a0;
+        font-size: 10.5px; letter-spacing: 0.4px;
+      }
     </style>
   </head>
   <body>
@@ -135,16 +242,18 @@
         <h1>Tackticus 3D — urban warfare</h1>
         <p>You play <span style="color:#ff7a7a;font-weight:600">Red</span>; Blue is computer-controlled.</p>
         <p>Each mech: <b>3 AP/turn</b>. Move = 1 AP (clear) / 2 AP (rubble) · Shoot = 1 AP</p>
-        <p>Click a <span style="color:#3bd4a4;font-weight:600">green hex</span> to move (cost shown).</p>
-        <p>Click a <span style="color:#ff5c6c;font-weight:600">red target</span> to fire (range 1-2).</p>
-        <p style="color:#aab2bd">Shots through buildings deal <b>half damage</b>. Rubble = 1 shot.</p>
-        <p style="color:#aab2bd">From a platform looking down: <b>+1 damage</b> (high ground).</p>
+        <p>Click a <span style="color:#3bd4a4;font-weight:600">green hex</span> to move; click a <span style="color:#ff5c6c;font-weight:600">red target</span> to fire (range 1-2).</p>
+        <p style="color:#aab2bd">Shots through buildings deal <b>half damage</b>. Platforms give <b>+1 damage</b> (high ground).</p>
+        <p style="color:#ffce4d">Step onto a glowing <b>supply crate</b>, then click it to spend 1 AP and pull a random item.</p>
+        <p style="color:#aab2bd">Hand items auto-equip; everything else goes to the 4-slot backpack.</p>
+        <p style="color:#aab2bd">Click a glowing inventory slot to use a <b>repair kit</b> or drop a <b>mine</b>.</p>
         <p style="color:#ffce4d">Win when the enemy team is all destroyed or immobilised.</p>
         <p><kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>T</kbd> top-down · <kbd>Wheel</kbd> zoom</p>
         <p style="color:#777;margin-top:8px;font-size:11px">
           Devtools:<br/>
-          <code>tackticus.applyApModifier('r1','blitz',+3)</code><br/>
-          <code>tackticus.applyDamageModifier('r1','heavy',+1)</code><br/>
+          <code>tackticus.crates()</code> · <code>tackticus.openCrate('r1','crate-1')</code><br/>
+          <code>tackticus.giveItem('r1',{kind:'weapon',damage:3})</code><br/>
+          <code>tackticus.mines()</code> · <code>tackticus.units()</code><br/>
           <code>tackticus.immobilise('b1')</code> · <code>tackticus.release('b1')</code><br/>
           <code>tackticus.setController(2,'human')</code> — disable AI<br/>
           <code>tackticus.endTurn()</code> · <code>tackticus.winner()</code>
@@ -162,6 +271,7 @@
       <div class="stats" id="stats">— FPS</div>
       <div class="status" id="status">Select a unit</div>
       <div class="dashboard" id="dashboard"></div>
+      <div class="item-card" id="item-card"></div>
     </div>
 
     <script type="module" src="./main.ts"></script>

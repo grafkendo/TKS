@@ -24,6 +24,28 @@
 //    their hex. They count as "out" for win-condition purposes.
 //  - Pure rule logic lives in ./rules/winCondition.ts and is unit tested.
 //
+// INVENTORY & SUPPLY CRATES
+// -------------------------
+//  - Every mech carries a 6-slot inventory: 2 hand slots + 4 backpack.
+//  - SUPPLY CRATES sit on the board. The contents are randomized at
+//    OPEN time so the player doesn't know what's inside until they
+//    commit. To open a crate the active mech must:
+//      1. stand on the crate's hex
+//      2. spend 1 AP
+//      3. click the crate (or call tackticus.openCrate)
+//    Hand items are routed to the first empty hand slot; everything
+//    else goes to backpack. The random roll is constrained by which
+//    slot kinds are free, so an open with at least one free slot
+//    always yields a usable item.
+//  - Passive items attach a Stat modifier (source = "item:<itemId>")
+//    that's reversed on removal — picking up "Plating +2" really does
+//    push your maxHp Stat by +2.
+//  - Consumables (repair kit, mine) are activated by clicking their
+//    inventory slot in the dashboard. They cost AP and are removed
+//    from inventory on use.
+//  - Mines: placed on the placer's current hex; explode for `amount`
+//    damage when an enemy mech enters. Friendly mines don't trigger.
+//
 // All numeric attributes (maxAp, maxHp, attackRange, damage) are Stats with
 // the same modifier architecture, so you can buff or debuff them from the
 // devtools at runtime. See the bottom of this file.
@@ -56,6 +78,25 @@ import { createTerrainFromSpec } from './terrain/factory';
 import { Rubble } from './terrain/Rubble';
 import type { TerrainPiece } from './terrain/types';
 import { evaluateOutcome, type GameOutcome } from './rules/winCondition';
+import type { Item } from './items/types';
+import {
+  createEmptyInventory,
+  addItem,
+  removeItem,
+  hasSpaceFor,
+  type Inventory,
+  type SlotAddress,
+} from './items/inventory';
+import {
+  makeWeapon,
+  makeArmor,
+  makeRangeModule,
+  makeRepairKit,
+  makeMine,
+} from './items/factory';
+import { rollItem } from './items/randomItem';
+import { createCrateMesh } from './items/Crate';
+import { createPlacedMineMesh, type PickupMeshHandle } from './items/PickupMesh';
 
 // ----- Tunables ------------------------------------------------------------
 
@@ -144,6 +185,115 @@ function spawnTerrain(): void {
 }
 spawnTerrain();
 
+// ----- Supply crates & mines -----------------------------------------------
+
+interface CrateEntity {
+  id: string;
+  tile: HexCoord;
+  mesh: PickupMeshHandle;
+}
+
+interface MineEntity {
+  id: string;
+  tile: HexCoord;
+  damage: number;
+  /** Mines won't trigger for mechs on this team (friendly fire avoided). */
+  placerTeam: 1 | 2;
+  placerId: string;
+  mesh: PickupMeshHandle;
+}
+
+const crates: CrateEntity[] = [];
+const mines: MineEntity[] = [];
+
+let _crateSeq = 0;
+
+function crateAt(h: HexCoord): CrateEntity | undefined {
+  return crates.find((c) => hexEquals(c.tile, h));
+}
+
+function mineAt(h: HexCoord): MineEntity | undefined {
+  return mines.find((m) => hexEquals(m.tile, h));
+}
+
+function spawnCrate(tile: HexCoord): CrateEntity {
+  const id = `crate-${++_crateSeq}`;
+  const mesh = createCrateMesh();
+  const p = board.tileToWorld(tile);
+  mesh.group.position.set(p.x, TILE_TOP_Y, p.z);
+  stage.scene.add(mesh.group);
+  picker.registerCrate(id, mesh.group);
+  const entity: CrateEntity = { id, tile, mesh };
+  crates.push(entity);
+  return entity;
+}
+
+function despawnCrate(crate: CrateEntity): void {
+  picker.unregisterCrate(crate.id);
+  const i = crates.indexOf(crate);
+  if (i >= 0) crates.splice(i, 1);
+  crate.mesh.dispose();
+}
+
+function spawnMine(unit: Unit, item: Item): MineEntity {
+  const mineId = `mine-${performance.now().toFixed(0)}-${Math.random().toString(36).slice(2, 7)}`;
+  const mesh = createPlacedMineMesh(item.color);
+  const p = board.tileToWorld(unit.tile);
+  mesh.group.position.set(p.x, TILE_TOP_Y + 0.04, p.z);
+  stage.scene.add(mesh.group);
+  const entity: MineEntity = {
+    id: mineId,
+    tile: { ...unit.tile },
+    damage: item.active?.amount ?? 1,
+    placerTeam: unit.team,
+    placerId: unit.id,
+    mesh,
+  };
+  mines.push(entity);
+  return entity;
+}
+
+function despawnMine(mine: MineEntity): void {
+  const i = mines.indexOf(mine);
+  if (i >= 0) mines.splice(i, 1);
+  mine.mesh.dispose();
+}
+
+// ----- Item ↔ Stat modifier bridge -----------------------------------------
+//
+// Items influence a carrier's Stats through standard `addModifier`/
+// `removeModifier` calls keyed by `item:<id>`. Centralised here so any
+// add/remove path (auto-pickup, devtools giveItem, consume-on-use) uses
+// the same source string and we never end up with orphan modifiers.
+
+function itemModifierSource(item: Item): string {
+  return `item:${item.id}`;
+}
+
+function applyItemPassive(unit: Unit, item: Item): void {
+  if (!item.passive) return;
+  const mod = {
+    source: itemModifierSource(item),
+    delta: item.passive.delta,
+    label: item.name,
+  };
+  switch (item.passive.stat) {
+    case 'damage':      unit.damage.addModifier(mod); break;
+    case 'maxHp':       unit.maxHp.addModifier(mod); break;
+    case 'attackRange': unit.attackRange.addModifier(mod); break;
+  }
+}
+
+function removeItemPassive(unit: Unit, item: Item): void {
+  if (!item.passive) return;
+  const src = itemModifierSource(item);
+  switch (item.passive.stat) {
+    case 'damage':      unit.damage.removeModifier(src); break;
+    case 'maxHp':       unit.maxHp.removeModifier(src); break;
+    case 'attackRange': unit.attackRange.removeModifier(src); break;
+  }
+}
+
 // ----- Unit model ----------------------------------------------------------
 
 interface Unit {
@@ -166,6 +316,9 @@ interface Unit {
   // Running state (plain numbers — refilled on turn start / decremented by play)
   ap: number;
   hp: number;
+
+  /** 6-slot grid: 2 hands + 4 backpack. See ./items/inventory.ts. */
+  inventory: Inventory;
 }
 
 const units: Unit[] = [];
@@ -233,11 +386,34 @@ async function placeMech(spec: {
     attackRange,
     ap: maxAp.effective,
     hp: maxHp.effective,
+    inventory: createEmptyInventory(),
   };
   units.push(unit);
 
   stage.addTicker((dt) => (mech as PrimitiveMech).tick(dt));
   return unit;
+}
+
+/**
+ * Initial crate spawn positions. Hexes chosen to be empty (no
+ * buildings/walls/mech spawns) and spread across the map so both teams
+ * have a reason to detour to grab supplies.
+ */
+const INITIAL_CRATE_TILES: HexCoord[] = [
+  { q:  0, r: -1 },
+  { q:  0, r:  1 },
+  { q: -3, r:  1 },
+  { q:  3, r: -1 },
+  { q: -3, r:  3 },
+  { q:  3, r: -3 },
+];
+
+function spawnInitialCrates(): void {
+  for (const tile of INITIAL_CRATE_TILES) {
+    if (!map.hasTile(tile)) continue;
+    if (blockingTerrainAt(tile)) continue;
+    spawnCrate(tile);
+  }
 }
 
 (async () => {
@@ -246,9 +422,11 @@ async function placeMech(spec: {
   await placeMech({ id: 'b1', chassis: 'medium', team: 2, weaponRight: 'cannon',                          tile: SPAWN.b1, facingDeg: 90 });
   await placeMech({ id: 'b2', chassis: 'medium', team: 2, weaponRight: 'missiles', weaponLeft: 'beam',    tile: SPAWN.b2, facingDeg: 90 });
 
+  spawnInitialCrates();
+
   renderTurnInfo();
   renderDashboard();
-  setStatus("Red team's turn. Click a mech to select.");
+  setStatus("Red team's turn. Walk to a supply crate and click it to open.");
 })();
 
 // ----- Turn state ----------------------------------------------------------
@@ -376,6 +554,7 @@ function checkWinCondition(): void {
   endTurnBtn.disabled = true;
   deselect();
   board.clearAllStates();
+  hideItemCard();
   renderGameOver();
   renderDashboard();
 
@@ -467,6 +646,30 @@ picker.setEvents({
     void fireAtTerrain(shooter, terrain);
   },
 
+  onCrateClick(crateId) {
+    if (mode === 'animating' || gameOver || aiActive) return;
+    const crate = crates.find((c) => c.id === crateId);
+    if (!crate) return;
+
+    const actor = selectedId ? units.find((u) => u.id === selectedId) : null;
+    // No selection OR selection is on a different hex → treat the crate
+    // click as a movement command toward its tile (if reachable).
+    if (!actor || actor.destroyed) {
+      setStatus(`Supply crate at (${crate.tile.q},${crate.tile.r}). Select a mech to interact.`);
+      return;
+    }
+    if (!hexEquals(actor.tile, crate.tile)) {
+      // Move toward the crate hex if reachable, else just announce it.
+      if (reachableForSelected.has(hexKey(crate.tile))) {
+        void walkUnitTo(actor, crate.tile);
+      } else {
+        setStatus(`Supply crate at (${crate.tile.q},${crate.tile.r}) — out of move range.`);
+      }
+      return;
+    }
+    openCrate(actor, crate);
+  },
+
   onTileClick(tile) {
     if (mode === 'animating' || gameOver || aiActive) return;
 
@@ -477,6 +680,13 @@ picker.setEvents({
     }
 
     if (hexEquals(tile, shooter.tile)) {
+      // Click your own hex: if there's a crate under you, open it.
+      // Otherwise the click is a "deselect" (current default).
+      const crate = crateAt(tile);
+      if (crate) {
+        openCrate(shooter, crate);
+        return;
+      }
       deselect();
       return;
     }
@@ -503,6 +713,11 @@ function describeSelection(unit: Unit): string {
     `HP ${unit.hp}/${unit.maxHp.effective}, ` +
     `range ${unit.attackRange.effective}, dmg ${unit.damage.effective}. `;
   if (unit.immobilised) return head + `IMMOBILISED — cannot act this game.`;
+
+  const crate = crateAt(unit.tile);
+  if (crate && unit.ap >= CRATE_OPEN_AP_COST) {
+    return head + `Click your tile (or the crate) to open it for 1 AP.`;
+  }
   return head + (unit.ap > 0
     ? `Green = move, red = fire.`
     : `Out of AP — end the turn.`);
@@ -610,9 +825,21 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
     unit.tile = step;
     unit.ap -= apCostToEnter(step);
     renderDashboard();
+
+    // Step-on effects: only mines auto-trigger. Supply crates require
+    // an explicit "open" action (1 AP) so the player can choose when
+    // to spend the AP and whether to risk a slot-full waste.
+    const killedByMine = triggerMineFor(unit);
+    if (killedByMine) break;
   }
 
   unit.mech.playAnimation('idle');
+
+  if (unit.destroyed) {
+    mode = 'idle';
+    deselect();
+    return;
+  }
 
   mode = 'selected';
   recomputeReachable(unit);
@@ -648,6 +875,207 @@ function animateStep(unit: Unit, dest: HexCoord): Promise<void> {
       }
     });
   });
+}
+
+// ----- Crate / mine interactions -------------------------------------------
+
+const CRATE_OPEN_AP_COST = 1;
+
+/** Free-slot summary for a unit's inventory. */
+function inventorySpace(unit: Unit): { handFree: boolean; backpackFree: boolean } {
+  return {
+    handFree: unit.inventory.hands.some((s) => s === null),
+    backpackFree: unit.inventory.backpack.some((s) => s === null),
+  };
+}
+
+/**
+ * Attempts to open `crate` with `unit`. Validates that the unit is on
+ * the same hex, has AP, and has at least one inventory slot free. On
+ * success: rolls a random item (constrained to free slot kinds),
+ * routes it to the right slot, applies any passive, despawns the
+ * crate, and shows the item-reveal card on the side.
+ */
+function openCrate(unit: Unit, crate: CrateEntity): void {
+  if (gameOver || mode === 'animating' || aiActive) return;
+  if (unit.destroyed) return;
+  if (unit.immobilised) {
+    setStatus(`${describeUnit(unit)} is immobilised and cannot interact.`);
+    return;
+  }
+  if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
+    setStatus(`It's not ${teamName(unit.team)}'s turn.`);
+    return;
+  }
+  if (!hexEquals(unit.tile, crate.tile)) {
+    setStatus(`${describeUnit(unit)} must stand on the crate to open it.`);
+    return;
+  }
+  if (unit.ap < CRATE_OPEN_AP_COST) {
+    setStatus(`${describeUnit(unit)} needs ${CRATE_OPEN_AP_COST} AP to open the crate.`);
+    return;
+  }
+
+  const space = inventorySpace(unit);
+  if (!space.handFree && !space.backpackFree) {
+    setStatus(`${describeUnit(unit)}'s inventory is full — drop something or use a consumable first.`);
+    return;
+  }
+
+  // Commit: spend AP, roll item, route.
+  unit.ap -= CRATE_OPEN_AP_COST;
+  const item = rollItem(space);
+  if (!item) {
+    // Shouldn't be reachable given the space check above, but be safe.
+    setStatus(`Crate was empty.`);
+    renderDashboard();
+    return;
+  }
+
+  const addr = addItem(unit.inventory, item);
+  if (!addr) {
+    // Defensive: addItem failed despite the space check (e.g., item kind
+    // we don't have room for — rollItem already filters but stay safe).
+    setStatus(`${describeUnit(unit)} couldn't fit ${item.name}.`);
+    renderDashboard();
+    return;
+  }
+  applyItemPassive(unit, item);
+
+  // Small FX where the crate stood.
+  const cw = new THREE.Vector3();
+  crate.mesh.group.getWorldPosition(cw);
+  fx.impact({ position: cw });
+
+  despawnCrate(crate);
+  showItemCard(item, addr);
+
+  setStatus(
+    `${describeUnit(unit)} opened a crate — ${item.name} → ${addr.slotKind} slot ${addr.index + 1}.`,
+  );
+  refreshAfterAction();
+  renderDashboard();
+}
+
+/**
+ * Triggers any enemy mine on `unit.tile`. Returns true if the unit was
+ * destroyed by the blast (so the walk loop can short-circuit).
+ */
+function triggerMineFor(unit: Unit): boolean {
+  const mine = mineAt(unit.tile);
+  if (!mine) return false;
+  if (mine.placerTeam === unit.team) return false; // friendly mine — inert
+
+  const dmg = mine.damage;
+  const p = board.tileToWorld(unit.tile);
+  const blast = new THREE.Vector3(p.x, TILE_TOP_Y + 0.4, p.z);
+  fx.impact({ position: blast });
+  fx.explosion({ position: blast, scale: 1.25 });
+
+  unit.hp = Math.max(0, unit.hp - dmg);
+  unit.mech.setDamageLevel(
+    Math.min(1, (unit.maxHp.effective - unit.hp) / unit.maxHp.effective),
+  );
+
+  despawnMine(mine);
+
+  if (unit.hp <= 0) {
+    unit.destroyed = true;
+    unit.mech.playAnimation('destroyed');
+    setStatus(`${describeUnit(unit)} stepped on a mine for ${dmg} damage — destroyed!`);
+    sinkUnitWreckage(unit);
+    renderDashboard();
+    checkWinCondition();
+    return true;
+  }
+
+  unit.mech.playAnimation('hit');
+  setStatus(
+    `${describeUnit(unit)} triggered a mine for ${dmg} damage. ` +
+    `(HP ${unit.hp}/${unit.maxHp.effective})`,
+  );
+  renderDashboard();
+  return false;
+}
+
+// ----- Active items (consumables) ------------------------------------------
+
+/** Public entry-point — dispatch by `item.active.kind`. */
+function useItemFromSlot(unit: Unit, addr: SlotAddress): void {
+  const item = addr.slotKind === 'hand'
+    ? unit.inventory.hands[addr.index]
+    : unit.inventory.backpack[addr.index];
+  if (!item) return;
+
+  if (gameOver || mode === 'animating' || aiActive) return;
+  if (unit.destroyed) return;
+  if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
+    setStatus(`Not ${teamName(unit.team)}'s turn.`);
+    return;
+  }
+  if (unit.immobilised) {
+    setStatus(`${describeUnit(unit)} is immobilised and cannot use items.`);
+    return;
+  }
+  if (!item.active) {
+    setStatus(`${item.name} is a passive item — already in effect.`);
+    return;
+  }
+  const cost = item.active.apCost;
+  if (unit.ap < cost) {
+    setStatus(`${describeUnit(unit)} needs ${cost} AP to use ${item.name} (has ${unit.ap}).`);
+    return;
+  }
+
+  switch (item.active.kind) {
+    case 'heal':      doHeal(unit, item, addr); return;
+    case 'placeMine': doPlaceMine(unit, item, addr); return;
+  }
+}
+
+function consumeItem(unit: Unit, item: Item, addr: SlotAddress): void {
+  removeItemPassive(unit, item); // safe no-op for active-only items
+  removeItem(unit.inventory, addr);
+}
+
+function doHeal(unit: Unit, item: Item, addr: SlotAddress): void {
+  const heal = item.active!.amount;
+  const cap = unit.maxHp.effective;
+  const before = unit.hp;
+  unit.hp = Math.min(cap, unit.hp + heal);
+  unit.ap -= item.active!.apCost;
+  consumeItem(unit, item, addr);
+  unit.mech.setDamageLevel(Math.min(1, (cap - unit.hp) / cap));
+
+  // Small green plume on the mech for visual feedback.
+  const tWorld = new THREE.Vector3();
+  const torso = unit.mech.getAttachPoint('torso');
+  if (torso) torso.getWorldPosition(tWorld);
+  else       unit.mech.object.getWorldPosition(tWorld);
+  fx.impact({ position: tWorld });
+
+  const gained = unit.hp - before;
+  setStatus(
+    `${describeUnit(unit)} used ${item.name} (+${gained} HP). ` +
+    `(HP ${unit.hp}/${cap})`,
+  );
+  refreshAfterAction();
+  renderDashboard();
+}
+
+function doPlaceMine(unit: Unit, item: Item, addr: SlotAddress): void {
+  if (mineAt(unit.tile)) {
+    setStatus(`There's already a mine here.`);
+    return;
+  }
+  unit.ap -= item.active!.apCost;
+  spawnMine(unit, item);
+  consumeItem(unit, item, addr);
+  setStatus(
+    `${describeUnit(unit)} dropped a ${item.name}. Enemies entering this hex take ${item.active!.amount} damage.`,
+  );
+  refreshAfterAction();
+  renderDashboard();
 }
 
 // ----- Combat --------------------------------------------------------------
@@ -895,11 +1323,6 @@ function replaceWithRubble(terrain: TerrainPiece): void {
 /** Which team's mechs appear in the dashboard. */
 let dashboardTeam: 1 | 2 = 1;
 
-function unitWeapons(u: Unit): string[] {
-  const cfg = u.mech.config;
-  return [cfg.weaponRight, cfg.weaponLeft].filter((w): w is NonNullable<typeof w> => Boolean(w));
-}
-
 function renderDashboard(): void {
   // Show controlled mechs (defaulting to team 1 / Red). Capped to DASHBOARD_SLOTS.
   const slots = units
@@ -909,60 +1332,7 @@ function renderDashboard(): void {
   dashboardEl.innerHTML = '';
 
   for (const u of slots) {
-    const slot = document.createElement('div');
-    slot.className = 'dash-slot';
-    slot.dataset.unitId = u.id;
-
-    const isSelected = u.id === selectedId;
-    if (isSelected) slot.classList.add('selected');
-    if (u.destroyed) slot.classList.add('destroyed');
-    else if (u.immobilised) slot.classList.add('immobilised');
-
-    const playerTurn = teamControllers[currentTeam] === 'human' && currentTeam === u.team;
-    const clickable = !u.destroyed && !gameOver && !aiActive && playerTurn;
-    if (!clickable) slot.classList.add('locked');
-
-    const maxHp = u.maxHp.effective;
-    const maxAp = u.maxAp.effective;
-    const hpPct = maxHp > 0 ? Math.max(0, (u.hp / maxHp) * 100) : 0;
-    const apPct = maxAp > 0 ? Math.max(0, (u.ap / maxAp) * 100) : 0;
-
-    const weapons = unitWeapons(u);
-    const weaponHtml = weapons.length === 0
-      ? '<span class="weapon" style="opacity:0.5">no weapons</span>'
-      : weapons.map((w) => `<span class="weapon">${w}</span>`).join('');
-
-    const statusTag = u.destroyed
-      ? '<span class="tag destroyed">DESTROYED</span>'
-      : u.immobilised
-        ? '<span class="tag immobilised">IMMOBILE</span>'
-        : `<span class="tag">${u.chassis.toUpperCase()}</span>`;
-
-    slot.innerHTML = `
-      <div class="dash-name">
-        <span>${teamName(u.team)} ${u.id.toUpperCase()}</span>
-        ${statusTag}
-      </div>
-      <div class="dash-bar dash-hp">
-        <label>HP</label>
-        <div class="bar"><div class="fill" style="width:${hpPct}%"></div></div>
-        <span>${formatDamage(u.hp)}/${maxHp}</span>
-      </div>
-      <div class="dash-bar dash-ap">
-        <label>AP</label>
-        <div class="bar"><div class="fill" style="width:${apPct}%"></div></div>
-        <span>${u.ap}/${maxAp}</span>
-      </div>
-      <div class="dash-loadout">${weaponHtml}</div>
-    `;
-
-    if (clickable) {
-      slot.addEventListener('click', () => {
-        if (mode === 'animating' || gameOver || aiActive) return;
-        selectUnit(u);
-      });
-    }
-
+    const slot = buildDashSlot(u);
     dashboardEl.appendChild(slot);
   }
 
@@ -973,6 +1343,123 @@ function renderDashboard(): void {
     empty.textContent = '— empty slot —';
     dashboardEl.appendChild(empty);
   }
+}
+
+function buildDashSlot(u: Unit): HTMLElement {
+  const slot = document.createElement('div');
+  slot.className = 'dash-slot';
+  slot.dataset.unitId = u.id;
+
+  if (u.id === selectedId) slot.classList.add('selected');
+  if (u.destroyed) slot.classList.add('destroyed');
+  else if (u.immobilised) slot.classList.add('immobilised');
+
+  const playerTurn = teamControllers[currentTeam] === 'human' && currentTeam === u.team;
+  const cardClickable = !u.destroyed && !gameOver && !aiActive && playerTurn;
+  if (!cardClickable) slot.classList.add('locked');
+
+  const maxHp = u.maxHp.effective;
+  const maxAp = u.maxAp.effective;
+  const hpPct = maxHp > 0 ? Math.max(0, (u.hp / maxHp) * 100) : 0;
+  const apPct = maxAp > 0 ? Math.max(0, (u.ap / maxAp) * 100) : 0;
+
+  const onCrate = !u.destroyed && !u.immobilised && crateAt(u.tile);
+  const statusTag = u.destroyed
+    ? '<span class="tag destroyed">DESTROYED</span>'
+    : u.immobilised
+      ? '<span class="tag immobilised">IMMOBILE</span>'
+      : onCrate
+        ? '<span class="tag crate">ON CRATE</span>'
+        : `<span class="tag">${u.chassis.toUpperCase()}</span>`;
+
+  // Header + bars (click-to-select on header area).
+  const header = document.createElement('div');
+  header.className = 'dash-head';
+  header.innerHTML = `
+    <div class="dash-name">
+      <span>${teamName(u.team)} ${u.id.toUpperCase()}</span>
+      ${statusTag}
+    </div>
+    <div class="dash-bar dash-hp">
+      <label>HP</label>
+      <div class="bar"><div class="fill" style="width:${hpPct}%"></div></div>
+      <span>${formatDamage(u.hp)}/${maxHp}</span>
+    </div>
+    <div class="dash-bar dash-ap">
+      <label>AP</label>
+      <div class="bar"><div class="fill" style="width:${apPct}%"></div></div>
+      <span>${u.ap}/${maxAp}</span>
+    </div>
+  `;
+  if (cardClickable) {
+    header.addEventListener('click', () => {
+      if (mode === 'animating' || gameOver || aiActive) return;
+      selectUnit(u);
+    });
+  }
+  slot.appendChild(header);
+
+  slot.appendChild(buildInventoryGrid(u, cardClickable));
+  return slot;
+}
+
+function buildInventoryGrid(u: Unit, parentClickable: boolean): HTMLElement {
+  const grid = document.createElement('div');
+  grid.className = 'inv-grid';
+
+  // Two hand cells then four backpack cells; CSS handles the visual split.
+  for (let i = 0; i < u.inventory.hands.length; i++) {
+    grid.appendChild(buildInventoryCell(u, 'hand', i, parentClickable));
+  }
+  for (let i = 0; i < u.inventory.backpack.length; i++) {
+    grid.appendChild(buildInventoryCell(u, 'backpack', i, parentClickable));
+  }
+  return grid;
+}
+
+function buildInventoryCell(
+  u: Unit,
+  slotKind: 'hand' | 'backpack',
+  index: number,
+  parentClickable: boolean,
+): HTMLElement {
+  const cell = document.createElement('div');
+  cell.className = `inv-cell ${slotKind}`;
+  const item = slotKind === 'hand'
+    ? u.inventory.hands[index]
+    : u.inventory.backpack[index];
+
+  if (!item) {
+    cell.classList.add('empty');
+    cell.title = `${slotKind} slot ${index + 1} — empty`;
+    return cell;
+  }
+
+  cell.style.borderColor = item.color;
+  cell.style.color = item.color;
+  cell.classList.add(`kind-${item.kind}`);
+  cell.textContent = item.icon;
+
+  const tooltipLines = [item.name, item.description];
+  if (item.active) {
+    const cost = item.active.apCost;
+    tooltipLines.push(
+      parentClickable && u.ap >= cost
+        ? `Click to use (${cost} AP).`
+        : `Needs ${cost} AP to use.`,
+    );
+  }
+  cell.title = tooltipLines.join('\n');
+
+  if (item.active && parentClickable) {
+    cell.classList.add('usable');
+    cell.addEventListener('click', (e) => {
+      e.stopPropagation();
+      useItemFromSlot(u, { slotKind, index });
+    });
+  }
+
+  return cell;
 }
 
 // ----- AI controller -------------------------------------------------------
@@ -1111,17 +1598,41 @@ interface StatSnapshot {
   mods: ReadonlyArray<{ source: string; delta: number; label?: string }>;
 }
 
+/** A simplified item snapshot for the devtools — no THREE objects. */
+interface ItemSnapshot {
+  id: string;
+  kind: string;
+  name: string;
+  slotKind: 'hand' | 'backpack';
+  passive?: { stat: string; delta: number };
+  active?: { kind: string; amount: number; apCost: number };
+}
+
+interface InventorySnapshot {
+  hands: (ItemSnapshot | null)[];
+  backpack: (ItemSnapshot | null)[];
+}
+
 interface TackticusApi {
   units(): Array<{
     id: string; chassis: ChassisType; team: 1 | 2; tile: HexCoord;
     destroyed: boolean; immobilised: boolean;
     ap: number; hp: number;
     maxAp: StatSnapshot; maxHp: StatSnapshot; damage: StatSnapshot; attackRange: StatSnapshot;
+    inventory: InventorySnapshot;
   }>;
   terrain(): Array<{
     id: string; kind: string; tile: HexCoord; destroyed: boolean;
     hp?: number; maxHp?: number; blocksMovement: boolean; walkable: boolean; topY: number;
   }>;
+  crates(): Array<{ id: string; tile: HexCoord }>;
+  mines(): Array<{ tile: HexCoord; damage: number; placerTeam: 1 | 2 }>;
+  /**
+   * Force-open a crate for the given unit (the unit must be on the
+   * crate's tile and have 1 AP; obeys the same rules as a click).
+   * Returns true on success.
+   */
+  openCrate(unitId: string, crateId: string): boolean;
   turn(): { number: number; team: 1 | 2 };
   endTurn(): void;
   /** Mark a unit as immobilised (alive but can't act). Triggers win check. */
@@ -1137,6 +1648,16 @@ interface TackticusApi {
   setDashboardTeam(team: 1 | 2): void;
   /** Snap the camera to top-down or iso (also via the T key). */
   setView(view: 'iso' | 'top'): void;
+  /**
+   * Give an item directly to a unit (bypasses pickup mechanics). Pass any of:
+   *   { kind: 'weapon',      damage: 2 }
+   *   { kind: 'armor',       hp: 2 }
+   *   { kind: 'rangeModule', range: 1 }
+   *   { kind: 'repairKit',   heal: 2 }
+   *   { kind: 'mine',        damage: 2 }
+   * Returns the inventory address used, or null if no space.
+   */
+  giveItem(unitId: string, spec: GiveItemSpec): SlotAddress | null;
   applyApModifier(unitId: string, source: string, delta: number, label?: string): boolean;
   applyHpModifier(unitId: string, source: string, delta: number, label?: string): boolean;
   applyDamageModifier(unitId: string, source: string, delta: number, label?: string): boolean;
@@ -1144,6 +1665,44 @@ interface TackticusApi {
   setAp(unitId: string, ap: number): boolean;
   setHp(unitId: string, hp: number): boolean;
   damageTerrain(terrainId: string, amount: number): boolean;
+}
+
+type GiveItemSpec =
+  | { kind: 'weapon';      damage: number; name?: string }
+  | { kind: 'armor';       hp: number;     name?: string }
+  | { kind: 'rangeModule'; range: number;  name?: string }
+  | { kind: 'repairKit';   heal: number;   name?: string }
+  | { kind: 'mine';        damage: number; name?: string };
+
+function buildItemFromSpec(spec: GiveItemSpec): Item {
+  switch (spec.kind) {
+    case 'weapon':      return makeWeapon(spec.damage, spec.name);
+    case 'armor':       return makeArmor(spec.hp, spec.name);
+    case 'rangeModule': return makeRangeModule(spec.range, spec.name);
+    case 'repairKit':   return makeRepairKit(spec.heal, spec.name);
+    case 'mine':        return makeMine(spec.damage, spec.name);
+  }
+}
+
+function snapshotItem(item: Item | null): ItemSnapshot | null {
+  if (!item) return null;
+  return {
+    id: item.id,
+    kind: item.kind,
+    name: item.name,
+    slotKind: item.slotKind,
+    passive: item.passive ? { stat: item.passive.stat, delta: item.passive.delta } : undefined,
+    active: item.active
+      ? { kind: item.active.kind, amount: item.active.amount, apCost: item.active.apCost }
+      : undefined,
+  };
+}
+
+function snapshotInventory(inv: Inventory): InventorySnapshot {
+  return {
+    hands: inv.hands.map(snapshotItem),
+    backpack: inv.backpack.map(snapshotItem),
+  };
 }
 
 const snapshot = (s: Stat): StatSnapshot => ({
@@ -1170,6 +1729,7 @@ const api: TackticusApi = {
       maxHp: snapshot(u.maxHp),
       damage: snapshot(u.damage),
       attackRange: snapshot(u.attackRange),
+      inventory: snapshotInventory(u.inventory),
     })),
   terrain: () =>
     terrainPieces.map((t) => ({
@@ -1177,8 +1737,36 @@ const api: TackticusApi = {
       hp: t.hp, maxHp: t.maxHp,
       blocksMovement: t.blocksMovement, walkable: t.walkable, topY: t.topY,
     })),
+  crates: () =>
+    crates.map((c) => ({ id: c.id, tile: { ...c.tile } })),
+  mines: () =>
+    mines.map((m) => ({ tile: { ...m.tile }, damage: m.damage, placerTeam: m.placerTeam })),
+  openCrate(unitId, crateId) {
+    const u = units.find((x) => x.id === unitId);
+    const c = crates.find((x) => x.id === crateId);
+    if (!u || !c) return false;
+    const before = crates.length;
+    openCrate(u, c);
+    return crates.length < before;
+  },
   turn: () => ({ number: turnNumber, team: currentTeam }),
   endTurn: () => endTurn(),
+
+  giveItem(unitId, spec) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u) return null;
+    const item = buildItemFromSpec(spec);
+    if (!hasSpaceFor(u.inventory, item)) return null;
+    const addr = addItem(u.inventory, item);
+    if (!addr) return null;
+    applyItemPassive(u, item);
+    renderDashboard();
+    if (selectedId === u.id) {
+      recomputeReachable(u);
+      refreshTileVisuals(null);
+    }
+    return addr;
+  },
 
   immobilise(unitId) {
     const u = units.find((x) => x.id === unitId);
@@ -1270,6 +1858,12 @@ const api: TackticusApi = {
 stage.addTicker((dt) => isoCam.tick(dt));
 stage.addTicker((dt) => fx.tick(dt));
 
+// Crate + placed-mine animations (bob / pulse / sway).
+stage.addTicker((_dt, total) => {
+  for (const c of crates) c.mesh.tick(total);
+  for (const m of mines)  m.mesh.tick(total);
+});
+
 let fpsAcc = 0;
 let fpsCount = 0;
 let fpsLastUpdate = 0;
@@ -1291,4 +1885,85 @@ stage.start();
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
+}
+
+// ----- Item reveal card ----------------------------------------------------
+
+const itemCardEl = document.getElementById('item-card') as HTMLDivElement | null;
+let itemCardHideTimer: number | null = null;
+
+/**
+ * Slide-in card on the right that shows what was just pulled from a
+ * crate, with kind/effect/where-it-went info. Auto-dismisses after a
+ * few seconds, but re-opening another crate refreshes the card.
+ */
+function showItemCard(item: Item, addr: SlotAddress): void {
+  if (!itemCardEl) return;
+
+  const effectLines: string[] = [];
+  if (item.passive) {
+    const sign = item.passive.delta >= 0 ? '+' : '';
+    const statLabel = passiveStatLabel(item.passive.stat);
+    effectLines.push(`${sign}${item.passive.delta} ${statLabel} while equipped`);
+  }
+  if (item.active) {
+    const verb = item.active.kind === 'heal' ? 'Repair' : 'Deploy mine';
+    effectLines.push(`Active: ${verb} (${item.active.apCost} AP)`);
+  }
+
+  const slotLabel = addr.slotKind === 'hand'
+    ? `Hand slot ${addr.index + 1}`
+    : `Backpack slot ${addr.index + 1}`;
+
+  const safeName = escapeHtml(item.name);
+  const safeDesc = escapeHtml(item.description);
+  const safeIcon = escapeHtml(item.icon);
+  const safeKind = item.kind.toUpperCase();
+
+  itemCardEl.innerHTML = `
+    <div class="item-card-flash">SUPPLIES</div>
+    <div class="item-card-row">
+      <div class="item-card-icon" style="border-color:${item.color};color:${item.color};">${safeIcon}</div>
+      <div class="item-card-title">
+        <div class="item-card-name" style="color:${item.color};">${safeName}</div>
+        <div class="item-card-kind">${safeKind} · ${item.slotKind.toUpperCase()}</div>
+      </div>
+    </div>
+    <div class="item-card-desc">${safeDesc}</div>
+    ${effectLines.length
+      ? `<ul class="item-card-stats">${effectLines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+      : ''}
+    <div class="item-card-stowed">Stowed: ${slotLabel}</div>
+  `;
+  itemCardEl.classList.add('visible');
+
+  if (itemCardHideTimer !== null) window.clearTimeout(itemCardHideTimer);
+  itemCardHideTimer = window.setTimeout(() => {
+    itemCardEl.classList.remove('visible');
+    itemCardHideTimer = null;
+  }, 6000);
+}
+
+function hideItemCard(): void {
+  if (itemCardHideTimer !== null) window.clearTimeout(itemCardHideTimer);
+  itemCardHideTimer = null;
+  itemCardEl?.classList.remove('visible');
+}
+
+function passiveStatLabel(stat: 'damage' | 'maxHp' | 'attackRange'): string {
+  switch (stat) {
+    case 'damage':      return 'Damage';
+    case 'maxHp':       return 'Max HP';
+    case 'attackRange': return 'Attack Range';
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (ch) =>
+    ch === '&' ? '&amp;' :
+    ch === '<' ? '&lt;' :
+    ch === '>' ? '&gt;' :
+    ch === '"' ? '&quot;' :
+                 '&#39;',
+  );
 }

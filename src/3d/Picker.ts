@@ -1,19 +1,21 @@
 // ============================================================================
-// Picker — pointer → world / tile / unit / terrain translation.
+// Picker — pointer → world / tile / unit / terrain / crate translation.
 //
-// Owns a single raycaster and handles three pickable categories:
+// Owns a single raycaster and handles four pickable categories:
 //   - units      (mechs registered by id)
+//   - crates     (supply crates registered by id)
 //   - terrain    (buildings, walls, platforms registered by id)
 //   - board tiles (always last-resort fallback)
 //
-// Click priority is unit > terrain > tile so a building behind a unit
-// doesn't steal the unit click, and a tile under a building doesn't
-// steal the building click.
+// Click priority is unit > crate > terrain > tile so a mech in front of a
+// supply crate still selects the mech, a crate behind cover still wins
+// over the cover, and the tile under any of them doesn't steal the click.
 //
 // Exposes events:
 //   - onTileHover(tile | null)
 //   - onTileClick(tile)
 //   - onUnitClick(unitId)
+//   - onCrateClick(crateId)
 //   - onTerrainClick(terrainId)
 // ============================================================================
 
@@ -25,6 +27,7 @@ export interface PickerEvents {
   onTileHover?: (tile: HexCoord | null) => void;
   onTileClick?: (tile: HexCoord) => void;
   onUnitClick?: (unitId: string) => void;
+  onCrateClick?: (crateId: string) => void;
   onTerrainClick?: (terrainId: string) => void;
 }
 
@@ -35,6 +38,7 @@ export class Picker {
   private boardPickables: THREE.Object3D[] = [];
   private unitObjects = new Map<string, THREE.Object3D>();
   private terrainObjects = new Map<string, THREE.Object3D>();
+  private crateObjects = new Map<string, THREE.Object3D>();
 
   private lastHoverTile: string | null = null;
 
@@ -67,6 +71,15 @@ export class Picker {
 
   unregisterTerrain(id: string): void {
     this.terrainObjects.delete(id);
+  }
+
+  registerCrate(id: string, root: THREE.Object3D): void {
+    root.userData.crateId = id;
+    this.crateObjects.set(id, root);
+  }
+
+  unregisterCrate(id: string): void {
+    this.crateObjects.delete(id);
   }
 
   setEvents(events: PickerEvents): void {
@@ -109,7 +122,7 @@ export class Picker {
     this.updateNdc(evt);
     this.raycaster.setFromCamera(this.pointerNdc, this.camera);
 
-    // 1) Units (highest priority — a mech in front of a building still wins).
+    // 1) Units (highest priority — a mech in front of a crate still wins).
     const unitRoots = Array.from(this.unitObjects.values());
     const unitHits = this.raycaster.intersectObjects(unitRoots, true);
     if (unitHits.length > 0) {
@@ -120,7 +133,19 @@ export class Picker {
       }
     }
 
-    // 2) Terrain (buildings, walls, platforms — anything destructible / blocking).
+    // 2) Crates (supply boxes — short objects that should still beat the
+    //    terrain/tile under them).
+    const crateRoots = Array.from(this.crateObjects.values());
+    const crateHits = this.raycaster.intersectObjects(crateRoots, true);
+    if (crateHits.length > 0) {
+      const id = this.findAncestorId(crateHits[0].object, 'crateId');
+      if (id) {
+        this.events.onCrateClick?.(id);
+        return;
+      }
+    }
+
+    // 3) Terrain (buildings, walls, platforms — anything destructible / blocking).
     const terrainRoots = Array.from(this.terrainObjects.values());
     const terrainHits = this.raycaster.intersectObjects(terrainRoots, true);
     if (terrainHits.length > 0) {
@@ -131,7 +156,7 @@ export class Picker {
       }
     }
 
-    // 3) Board tiles (fallback).
+    // 4) Board tiles (fallback).
     const tileHit = this.raycaster.intersectObjects(this.boardPickables, false)[0];
     if (tileHit) {
       const q = tileHit.object.userData?.tileQ;
@@ -142,7 +167,10 @@ export class Picker {
     }
   };
 
-  private findAncestorId(o: THREE.Object3D | null, key: 'unitId' | 'terrainId'): string | null {
+  private findAncestorId(
+    o: THREE.Object3D | null,
+    key: 'unitId' | 'terrainId' | 'crateId',
+  ): string | null {
     let cur: THREE.Object3D | null = o;
     while (cur) {
       const id = cur.userData?.[key];
