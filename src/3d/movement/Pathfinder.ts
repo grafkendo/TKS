@@ -5,8 +5,8 @@
 // 2 AP for rubble). When all costs are 1 this degenerates to BFS.
 //
 // API:
-//   reachable(start, budget, costToEnter?) → Map<"q_r", cumulativeCost>
-//   findPath(start, end, budget, costToEnter?) → HexCoord[] | null
+//   reachable(start, budget) → Map<"q_r", cumulativeCost>
+//   findPath(start, end, budget) → HexCoord[] | null
 //
 // Conventions:
 //   - The start hex is always in the reachable map at cost 0 (even if
@@ -14,7 +14,11 @@
 //   - "budget" is the maximum cumulative enter-cost a path may have.
 //   - `costToEnter` is called on every destination hex; the start hex is
 //     never asked because nothing costs to "enter" where you already are.
-//   - Other units block both passage AND landing (handled via isBlocked).
+//   - `isBlocked` is a HARD block — the hex can't be passed through or
+//     landed on (walls, buildings, hostile units).
+//   - `canStop` (optional, default = always true) is a SOFT block — the
+//     hex can be traversed but the unit can't end its move there. Used
+//     for allies the unit can squeeze past but can't share a hex with.
 //
 // Pure logic — no Three.js, no DOM.
 // ============================================================================
@@ -30,6 +34,13 @@ export interface PathfinderOptions {
    */
   isBlocked: (h: HexCoord) => boolean;
   /**
+   * Optional landing-only check. Default: every passable hex is also
+   * stoppable. When this returns false the hex can still be traversed
+   * but won't appear in `reachable()` output and isn't a valid
+   * `findPath()` target.
+   */
+  canStop?: (h: HexCoord) => boolean;
+  /**
    * Optional per-hex enter cost. Default: every hex costs 1.
    * Must always be > 0 (else Dijkstra's invariants break).
    */
@@ -37,21 +48,33 @@ export interface PathfinderOptions {
 }
 
 const ONE = () => 1;
+const TRUE = () => true;
 
 export class Pathfinder {
   private cost: (h: HexCoord) => number;
+  private canStop: (h: HexCoord) => boolean;
 
   constructor(private opts: PathfinderOptions) {
     this.cost = opts.costToEnter ?? ONE;
+    this.canStop = opts.canStop ?? TRUE;
   }
 
   /**
-   * All hexes reachable from `start` for a total cumulative cost ≤ `budget`.
-   * Map values are cost-to-reach (0 for start).
+   * All hexes reachable from `start` for a total cumulative cost ≤ `budget`
+   * and where the unit can actually stop. The map values are
+   * cost-to-reach (0 for start).
+   *
+   * The internal traversal still goes through `canStop`-false hexes so
+   * we can route around an ally and land on the far side.
    */
   reachable(start: HexCoord, budget: number): Map<string, number> {
     const out = new Map<string, number>();
+    // Internal "best cost to step ONTO this hex" — includes pass-through
+    // hexes so we can keep walking past them.
+    const seen = new Map<string, number>();
+
     out.set(hexKey(start), 0);
+    seen.set(hexKey(start), 0);
     if (budget <= 0) return out;
 
     const pq: Array<{ h: HexCoord; c: number }> = [{ h: start, c: 0 }];
@@ -59,7 +82,7 @@ export class Pathfinder {
     while (pq.length > 0) {
       const cur = popMin(pq);
       const curKey = hexKey(cur.h);
-      if (cur.c > (out.get(curKey) ?? Infinity)) continue; // stale
+      if (cur.c > (seen.get(curKey) ?? Infinity)) continue; // stale
 
       for (const dir of HEX_DIRS) {
         const n: HexCoord = { q: cur.h.q + dir.q, r: cur.h.r + dir.r };
@@ -69,9 +92,10 @@ export class Pathfinder {
         const newCost = cur.c + step;
         if (newCost > budget) continue;
         const nKey = hexKey(n);
-        const prev = out.get(nKey);
+        const prev = seen.get(nKey);
         if (prev === undefined || newCost < prev) {
-          out.set(nKey, newCost);
+          seen.set(nKey, newCost);
+          if (this.canStop(n)) out.set(nKey, newCost);
           pq.push({ h: n, c: newCost });
         }
       }
@@ -87,6 +111,7 @@ export class Pathfinder {
     if (start.q === end.q && start.r === end.r) return [];
     if (!this.opts.inBounds(end)) return null;
     if (this.opts.isBlocked(end)) return null;
+    if (!this.canStop(end)) return null;
 
     const dist = new Map<string, number>();
     const parents = new Map<string, string>();

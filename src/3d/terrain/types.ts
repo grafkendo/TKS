@@ -94,6 +94,11 @@ export interface TerrainPiece {
   // ----- Behavior -----
   /** Take damage (if HP exists). Returns true if this hit destroyed it. */
   takeDamage(amount: number): boolean;
+  /**
+   * Optional staged-destruction probe. Buildings return 0-3
+   * (intact → rough terrain). Other pieces return undefined.
+   */
+  getDestructionStage?(): 0 | 1 | 2 | 3;
   /** Optional per-frame update (smoke, glow, debris bobs, etc.). */
   tick?(dt: number): void;
   /** Release all GPU resources (geometry + material). */

@@ -4,10 +4,8 @@
 // TURN-BASED RULES
 // ----------------
 //  - Teams alternate turns. End your turn with the "End Turn" button.
-//  - Every mech refills to MAX AP (default 3) at the start of its team's turn.
-//  - Moving into a clear hex costs 1 AP; moving onto rubble costs 2 AP.
-//  - Firing costs 1 AP and does `unit.damage.effective` damage (default 1).
-//  - Mechs have 3 HP. Buildings have 6–10 HP; walls have 2; rubble has 1.
+//  - Every mech refills to MAX AP at the start of its team's turn.
+//  - Firing costs 1 AP and does `unit.damage.effective` damage.
 //  - If a shot's hex line passes through a destructible building, damage
 //    is HALVED per building crossed.
 //  - Shooting rubble (1 HP) clears it and opens the path.
@@ -15,6 +13,41 @@
 //    the target is lower than them, the attack does +1 damage. The bonus
 //    is added BEFORE the cover multiplier — high-ground through cover is
 //    `(base + 1) * 0.5`.
+//
+// UNIT ARCHETYPES (see ./enemies/archetypes.ts)
+// --------------------------------------------
+//  - ELITE   : 3 AP, 3 HP, per-hex movement (1 AP / clear hex, 2 / rubble)
+//  - GRUNT   : 1 AP, 1 HP, burst-move 1 hex per action
+//  - SCOUT   : 1 AP, 1 HP, burst-move 2 hexes per action
+//  - ARMORED : 1 AP, 2 HP, burst-move 1 hex per action, ARMOR THRESHOLD 2
+//              (any single shot dealing < 2 damage is DEFLECTED → 0 damage).
+//    "Burst" movement = the whole move action costs ONE AP regardless of
+//    distance, with a per-action cap = movementRange hexes.
+//  - Allied mechs are PASSABLE: they don't block each other's paths but
+//    can't share a hex.
+//
+// ORBITAL DROP POINTS (see ./spawn/SpawnPoint.ts)
+// -----------------------------------------------
+//  - Red ground-pads scattered across team 2's side.
+//  - At the start of EVERY team-2 turn, every clear drop point
+//    materializes a new enemy of a random archetype. The only gate
+//    is the global alive cap (MAX_TEAM2_ALIVE) and per-tile occupancy.
+//
+// CRATE TRAPS (see ./items/crateTraps.ts)
+// --------------------------------------
+//  - ~25% of supply-crate opens trigger a trap INSTEAD of a drop.
+//    The AP is still spent. Trap kinds:
+//      - EXPLOSION : mega-damage that bypasses armor
+//      - STUN      : opener loses their next own-team turn
+//      - ENEMY     : a hostile mech drops in adjacent to the opener
+//  - All three are revealed via a red-themed reveal card on the right
+//    of the screen, mirroring the normal item card.
+//
+// STUN (see Unit.stunnedTurns)
+// ---------------------------
+//  - Affected units start their next own-team turn with 0 AP and
+//    `stunnedTurns--`. They can be selected to inspect but can't move,
+//    fire, open crates, or use items.
 //
 // WIN CONDITION
 // -------------
@@ -66,6 +99,7 @@ import type { PrimitiveMech } from './mech/PrimitiveMech';
 import { Stat } from './stats/Stat';
 import {
   HexCoord,
+  HEX_DIRS,
   hexDistance,
   hexEquals,
   hexFacingDegrees,
@@ -93,10 +127,24 @@ import {
   makeRangeModule,
   makeRepairKit,
   makeMine,
+  makeDemoCharge,
+  makeTacticalNuke,
 } from './items/factory';
 import { rollItem } from './items/randomItem';
+import { rollCrateTrap, type CrateTrapOutcome } from './items/crateTraps';
 import { createCrateMesh } from './items/Crate';
 import { createPlacedMineMesh, type PickupMeshHandle } from './items/PickupMesh';
+import { nukeBlastHexes, resolveNukeTrajectory } from './items/nukeBlast';
+import {
+  ARCHETYPES,
+  ELITE,
+  rollEnemyArchetype,
+  applyArmor,
+  type EnemyArchetype,
+  type ArchetypeKey,
+  type MovementMode,
+} from './enemies/archetypes';
+import { createSpawnMesh, createSpawnFlash, type SpawnMeshHandle } from './spawn/SpawnPoint';
 
 // ----- Tunables ------------------------------------------------------------
 
@@ -120,6 +168,35 @@ const turnInfoEl = document.getElementById('turn-info') as HTMLDivElement;
 const endTurnBtn = document.getElementById('end-turn-btn') as HTMLButtonElement;
 const gameOverEl = document.getElementById('game-over') as HTMLDivElement;
 const dashboardEl = document.getElementById('dashboard') as HTMLDivElement;
+const hudToggleBtn = document.getElementById('hud-toggle') as HTMLButtonElement;
+const hudBodyEl = document.getElementById('hud-body') as HTMLDivElement;
+const moveCostLayerEl = document.getElementById('move-cost-layer') as HTMLDivElement;
+const showMoveCostCheckbox = document.getElementById('setting-show-move-cost') as HTMLInputElement;
+
+/**
+ * Persisted user preferences. Each entry maps directly to a checkbox in
+ * the hamburger settings panel. Default values are the initial checked
+ * state of the inputs in the HTML.
+ */
+const settings = {
+  /** Render per-hex AP cost labels around the selected mech. */
+  showMoveCost: showMoveCostCheckbox?.checked ?? true,
+};
+
+// Hamburger toggle: collapse / expand the entire instructional body.
+if (hudToggleBtn && hudBodyEl) {
+  hudToggleBtn.addEventListener('click', () => {
+    const willCollapse = !hudBodyEl.classList.contains('collapsed');
+    hudBodyEl.classList.toggle('collapsed', willCollapse);
+    hudToggleBtn.setAttribute('aria-expanded', String(!willCollapse));
+  });
+}
+if (showMoveCostCheckbox) {
+  showMoveCostCheckbox.addEventListener('change', () => {
+    settings.showMoveCost = showMoveCostCheckbox.checked;
+    updateMoveCostOverlay();
+  });
+}
 
 /** Up to N controlled-mech slots shown in the bottom dashboard. */
 const DASHBOARD_SLOTS = 3;
@@ -164,10 +241,19 @@ function elevationAt(h: HexCoord): number {
   return t && t.walkable ? t.topY : 0;
 }
 
-/** AP cost to step onto a hex: 2 for rubble, 1 otherwise. */
+/**
+ * AP cost to step onto a hex.
+ *   2 AP — intact rubble pile (slow to scramble through)
+ *   2 AP — fully-destroyed building stage 3 ("rough terrain"): the
+ *          ash-and-girders pad left behind after a nuke / sustained fire
+ *   1 AP — clear ground (and rubble that has been further cleared by
+ *          shooting it, which sets destroyed = true)
+ */
 function apCostToEnter(h: HexCoord): number {
   const t = terrainAt(h);
-  if (t && t.kind === 'rubble' && !t.destroyed) return AP_COST.rubble;
+  if (!t) return AP_COST.clearGround;
+  if (t.kind === 'rubble'   && !t.destroyed) return AP_COST.rubble;
+  if (t.kind === 'building' &&  t.destroyed) return AP_COST.rubble;
   return AP_COST.clearGround;
 }
 
@@ -305,13 +391,37 @@ interface Unit {
   destroyed: boolean;
   /** Alive but unable to move OR shoot. Counts as "out" for win condition. */
   immobilised: boolean;
+  /**
+   * Number of own-team turns the unit will skip. Decremented and the
+   * AP zeroed at the start of every own-team turn while > 0.
+   * 0 = not stunned.
+   */
+  stunnedTurns: number;
   facingDeg: number;
 
-  // Attributes (Stats — modifiable via devtools)
+  // Identity / behavior — comes from ./enemies/archetypes.ts
+  archetypeKey: ArchetypeKey;
+  /** Display name (e.g. "Mech", "Grunt", "Scout", "Armored"). */
+  className: string;
+
+  // Combat attributes (Stats — modifiable via devtools)
   maxAp: Stat;
   maxHp: Stat;
   damage: Stat;
   attackRange: Stat;
+
+  /**
+   * Incoming damage below this value is deflected (zero HP loss). 0 = no armor.
+   */
+  armorThreshold: number;
+
+  // Movement
+  movementMode: MovementMode;
+  /**
+   * For 'burst' movement: max hexes per single move action.
+   * For 'per-hex' movement: just an informational cap (gated by AP).
+   */
+  movementRange: number;
 
   // Running state (plain numbers — refilled on turn start / decremented by play)
   ap: number;
@@ -327,63 +437,118 @@ function unitAt(h: HexCoord): Unit | undefined {
   return units.find((u) => !u.destroyed && hexEquals(u.tile, h));
 }
 
+/**
+ * Build a Pathfinder configured for `forUnit`. The configuration differs
+ * by movement mode:
+ *   - per-hex: per-hex AP cost (1 clear, 2 rubble), budget = unit.ap.
+ *   - burst  : flat cost of 1 per hex, budget = movementRange. The AP
+ *              cost (always 1 per action) is handled separately in
+ *              `walkUnitTo`.
+ * Hostile units are HARD-blocked. Allied units are SOFT-blocked
+ * (passable but not stoppable).
+ */
 function makePathfinder(forUnit: Unit): Pathfinder {
   return new Pathfinder({
     inBounds: (h) => map.hasTile(h),
     isBlocked: (h) => {
       if (hexEquals(h, forUnit.tile)) return false;
-      if (unitAt(h)) return true;
+      const other = unitAt(h);
+      if (other && other.team !== forUnit.team) return true;
       return blockingTerrainAt(h);
     },
-    costToEnter: apCostToEnter,
+    canStop: (h) => {
+      if (hexEquals(h, forUnit.tile)) return true;
+      const other = unitAt(h);
+      // Allies block landing but not passage; hostiles already handled
+      // by isBlocked above.
+      if (other && other.team === forUnit.team) return false;
+      return true;
+    },
+    costToEnter: forUnit.movementMode === 'burst' ? () => 1 : apCostToEnter,
   });
+}
+
+/** Budget passed to reachable()/findPath() — depends on movement mode. */
+function moveBudget(unit: Unit): number {
+  return unit.movementMode === 'burst' ? unit.movementRange : unit.ap;
+}
+
+/** AP a move ACTION will cost (for can-I-afford checks). */
+function moveActionApCost(unit: Unit, path: HexCoord[]): number {
+  if (unit.movementMode === 'burst') return path.length > 0 ? 1 : 0;
+  // per-hex: sum of step costs
+  let total = 0;
+  for (const h of path) total += apCostToEnter(h);
+  return total;
 }
 
 // ----- Spawn mechs ---------------------------------------------------------
 
 async function placeMech(spec: {
   id: string;
-  chassis: ChassisType;
   team: 1 | 2;
-  weaponRight: WeaponType;
-  weaponLeft?: WeaponType;
   tile: HexCoord;
   facingDeg: number;
+  /** Defaults to ELITE — applied to AP/HP/damage/range/movement. */
+  archetype?: EnemyArchetype;
+  /** Override the archetype's chassis. */
+  chassis?: ChassisType;
+  /** Override the archetype's primary weapon. */
+  weaponRight?: WeaponType;
+  weaponLeft?: WeaponType;
 }): Promise<Unit> {
+  const archetype = spec.archetype ?? ELITE;
+  const chassis = spec.chassis ?? archetype.chassis;
+  const weaponRight = spec.weaponRight ?? archetype.weaponRight;
+  const weaponLeft = spec.weaponLeft ?? archetype.weaponLeft;
+
   const loader = new DefaultAssetLoader();
   const mech = await loader.loadMech({
-    chassis: spec.chassis,
+    chassis,
     team: spec.team,
-    weaponRight: spec.weaponRight,
-    weaponLeft: spec.weaponLeft,
+    weaponRight,
+    weaponLeft,
   });
 
   const pos = board.tileToWorld(spec.tile);
   mech.object.position.copy(pos);
   mech.object.position.y = TILE_TOP_Y + elevationAt(spec.tile);
   mech.setFacing(spec.facingDeg);
+  mech.object.scale.setScalar(archetype.visualScale);
+
+  // Insignia — a small colored marker floating above the mech head so
+  // the player can tell a Grunt from a Scout at a glance.
+  if (archetype.key !== 'elite') {
+    attachArchetypeInsignia(mech.object, archetype);
+  }
 
   stage.scene.add(mech.object);
   picker.registerUnit(spec.id, mech.object);
 
-  const maxAp = new Stat(3, { min: 0 });
-  const maxHp = new Stat(3, { min: 1 });
-  const damage = new Stat(1, { min: 0 });
-  const attackRange = new Stat(ATTACK_RANGE_BASE, { min: 0 });
+  const maxAp = new Stat(archetype.apMax, { min: 0 });
+  const maxHp = new Stat(archetype.hpMax, { min: 1 });
+  const damage = new Stat(archetype.damage, { min: 0 });
+  const attackRange = new Stat(archetype.attackRange, { min: 0 });
 
   const unit: Unit = {
     id: spec.id,
     mech,
     tile: spec.tile,
     team: spec.team,
-    chassis: spec.chassis,
+    chassis,
     destroyed: false,
     immobilised: false,
+    stunnedTurns: 0,
     facingDeg: spec.facingDeg,
+    archetypeKey: archetype.key,
+    className: archetype.displayName,
     maxAp,
     maxHp,
     damage,
     attackRange,
+    armorThreshold: archetype.armorThreshold,
+    movementMode: archetype.movementMode,
+    movementRange: archetype.movementRange,
     ap: maxAp.effective,
     hp: maxHp.effective,
     inventory: createEmptyInventory(),
@@ -392,6 +557,39 @@ async function placeMech(spec: {
 
   stage.addTicker((dt) => (mech as PrimitiveMech).tick(dt));
   return unit;
+}
+
+/**
+ * Attach a small floating colored cube above the mech's head so the
+ * player can identify minion types at a glance. The cube sits in mech
+ * local space, so it scales/moves/rotates with the unit.
+ */
+function attachArchetypeInsignia(mechRoot: THREE.Object3D, arch: EnemyArchetype): void {
+  // Place the insignia above the body — well above the standard mech
+  // bounding height (~2.4 world units). It scales with mech.visualScale.
+  const color = new THREE.Color(arch.haloColor);
+  const geom = new THREE.OctahedronGeometry(0.12, 0);
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    emissive: color,
+    emissiveIntensity: 1.0,
+    metalness: 0.4,
+    roughness: 0.4,
+  });
+  const insignia = new THREE.Mesh(geom, mat);
+  insignia.position.set(0, 2.55, 0);
+  insignia.userData.tackticus_insignia = true;
+  insignia.userData.kind = 'insignia';
+  mechRoot.add(insignia);
+
+  // Slight idle bob — added via a per-tick action through stage.addTicker
+  // in placeMech's existing ticker chain would require a closure. Keep
+  // it simple: rotate continuously (looks like a marker).
+  const baseY = insignia.position.y;
+  stage.addTicker((_dt, total) => {
+    insignia.rotation.y = total * 1.8;
+    insignia.position.y = baseY + Math.sin(total * 2.0) * 0.05;
+  });
 }
 
 /**
@@ -416,17 +614,200 @@ function spawnInitialCrates(): void {
   }
 }
 
+// ----- Enemy spawn points ---------------------------------------------------
+
+interface SpawnPointEntity {
+  id: string;
+  tile: HexCoord;
+  team: 2;
+  mesh: SpawnMeshHandle;
+}
+
+const spawnPoints: SpawnPointEntity[] = [];
+let _spawnedEnemySeq = 0;
+const activeSpawnFlashes: Array<ReturnType<typeof createSpawnFlash>> = [];
+
+/**
+ * Hard cap on total alive team-2 mechs. The orbital drop points keep
+ * dropping reinforcements every enemy turn UNTIL we hit this ceiling;
+ * once the board clears (or you kill enough) the next enemy turn fills
+ * the empty pads again.
+ */
+const MAX_TEAM2_ALIVE = 8;
+
+const INITIAL_SPAWN_POINT_TILES: HexCoord[] = [
+  { q:  2, r: -3 },
+  { q:  3, r: -2 },
+  { q: -1, r: -1 },
+];
+
+function spawnInitialSpawnPoints(): void {
+  for (const tile of INITIAL_SPAWN_POINT_TILES) {
+    if (!map.hasTile(tile)) continue;
+    if (blockingTerrainAt(tile)) continue;
+    placeSpawnPoint(tile);
+  }
+}
+
+function placeSpawnPoint(tile: HexCoord): SpawnPointEntity {
+  const mesh = createSpawnMesh('#ff5c6c');
+  const p = board.tileToWorld(tile);
+  mesh.group.position.set(p.x, TILE_TOP_Y - 0.02, p.z);
+  stage.scene.add(mesh.group);
+  const id = `spawn-${spawnPoints.length + 1}`;
+  const sp: SpawnPointEntity = { id, tile, team: 2, mesh };
+  spawnPoints.push(sp);
+  return sp;
+}
+
+/**
+ * Remove an orbital drop point from play. Cleans up the mesh, frees
+ * GPU resources, and drops it from the active list so future
+ * `tickSpawnPoints` calls skip it forever. Idempotent.
+ */
+function despawnSpawnPoint(sp: SpawnPointEntity): void {
+  const idx = spawnPoints.indexOf(sp);
+  if (idx < 0) return;
+  spawnPoints.splice(idx, 1);
+  stage.scene.remove(sp.mesh.group);
+  sp.mesh.dispose();
+}
+
+function aliveCount(team: 1 | 2): number {
+  return units.filter((u) => u.team === team && !u.destroyed).length;
+}
+
+/**
+ * Called at the start of every team-2 turn. Every clear spawn point
+ * deploys one fresh enemy of a random archetype — no cooldown, no
+ * dice roll. The gates are:
+ *   - the global alive cap (`MAX_TEAM2_ALIVE`)
+ *   - the tile must be free of blocking terrain
+ *   - the tile must NOT have a player (team 1) mech standing on it —
+ *     "squatting" on an enemy drop pad is a real tactic that should
+ *     suppress that pad for the turn
+ *   - the tile must not be occupied by an existing enemy mech (its
+ *     own kind would just block the warp anyway)
+ *
+ * Returns the count of new enemies dropped (for status reporting).
+ */
+async function tickSpawnPoints(): Promise<number> {
+  let dropped = 0;
+  const dropNames: string[] = [];
+  let blockedByPlayer = 0;
+  let blockedByEnemy = 0;
+  let blockedByTerrain = 0;
+
+  for (const sp of spawnPoints) {
+    if (aliveCount(2) >= MAX_TEAM2_ALIVE) break;
+
+    const standing = unitAt(sp.tile);
+    if (standing) {
+      // Player squatters block drops outright — call it out separately
+      // so the player gets clear feedback that the tactic is working.
+      if (standing.team === 1) blockedByPlayer++;
+      else                     blockedByEnemy++;
+      continue;
+    }
+    if (blockingTerrainAt(sp.tile)) {
+      blockedByTerrain++;
+      continue;
+    }
+
+    const arch = rollEnemyArchetype();
+    const id = `s${++_spawnedEnemySeq}`;
+    await placeMech({ id, team: 2, tile: sp.tile, facingDeg: 90, archetype: arch });
+    dropped += 1;
+    dropNames.push(arch.displayName);
+
+    // Warp-in beam.
+    const flash = createSpawnFlash(arch.haloColor);
+    const p = board.tileToWorld(sp.tile);
+    flash.group.position.set(p.x, TILE_TOP_Y, p.z);
+    stage.scene.add(flash.group);
+    activeSpawnFlashes.push(flash);
+  }
+
+  // Compose a single status line that summarises both what dropped AND
+  // what was blocked so the player understands the cause-and-effect.
+  const fragments: string[] = [];
+  if (dropped > 0) {
+    fragments.push(
+      `Orbital drop: ${dropped} new enemy mech${dropped > 1 ? 's' : ''} ` +
+      `(${dropNames.join(', ')})`,
+    );
+  }
+  if (blockedByPlayer > 0) {
+    fragments.push(
+      `${blockedByPlayer} drop pad${blockedByPlayer > 1 ? 's' : ''} ` +
+      `suppressed by your mech${blockedByPlayer > 1 ? 's' : ''}`,
+    );
+  }
+  if (blockedByEnemy > 0) {
+    fragments.push(
+      `${blockedByEnemy} pad${blockedByEnemy > 1 ? 's' : ''} blocked by other enemies`,
+    );
+  }
+  if (blockedByTerrain > 0) {
+    fragments.push(
+      `${blockedByTerrain} pad${blockedByTerrain > 1 ? 's' : ''} blocked by terrain`,
+    );
+  }
+  if (fragments.length > 0) setStatus(fragments.join('. ') + '.');
+
+  renderDashboard();
+  return dropped;
+}
+
+// Pulsing pad animation + "player is squatting" lockdown visual. The
+// pad turns green and the rising rings retract whenever any unit (in
+// practice a red mech holding the pad) stands on it — that's the
+// at-a-glance feedback that the drop is suppressed for the turn.
+stage.addTicker((_dt, total) => {
+  for (const sp of spawnPoints) {
+    const occupant = unitAt(sp.tile);
+    sp.mesh.setSuppressed(!!occupant);
+    sp.mesh.tick(total);
+  }
+});
+
+// Drive + reap one-shot warp flashes.
+stage.addTicker((dt) => {
+  for (let i = activeSpawnFlashes.length - 1; i >= 0; i--) {
+    const done = activeSpawnFlashes[i].tick(dt);
+    if (done) {
+      activeSpawnFlashes[i].dispose();
+      activeSpawnFlashes.splice(i, 1);
+    }
+  }
+});
+
 (async () => {
-  await placeMech({ id: 'r1', chassis: 'light',  team: 1, weaponRight: 'beam',                            tile: SPAWN.r1, facingDeg: 270 });
-  await placeMech({ id: 'r2', chassis: 'heavy',  team: 1, weaponRight: 'cannon', weaponLeft: 'missiles',  tile: SPAWN.r2, facingDeg: 270 });
-  await placeMech({ id: 'b1', chassis: 'medium', team: 2, weaponRight: 'cannon',                          tile: SPAWN.b1, facingDeg: 90 });
-  await placeMech({ id: 'b2', chassis: 'medium', team: 2, weaponRight: 'missiles', weaponLeft: 'beam',    tile: SPAWN.b2, facingDeg: 90 });
+  // Red team — elite player mechs (3 AP, per-hex movement).
+  await placeMech({ id: 'r1', team: 1, tile: SPAWN.r1, facingDeg: 270, archetype: ELITE, chassis: 'light', weaponRight: 'beam' });
+  await placeMech({ id: 'r2', team: 1, tile: SPAWN.r2, facingDeg: 270, archetype: ELITE, chassis: 'heavy', weaponRight: 'cannon', weaponLeft: 'missiles' });
+
+  // Blue team — starts with two grunts. Spawn points feed reinforcements.
+  await placeMech({ id: 'b1', team: 2, tile: SPAWN.b1, facingDeg: 90,  archetype: ARCHETYPES.grunt });
+  await placeMech({ id: 'b2', team: 2, tile: SPAWN.b2, facingDeg: 90,  archetype: ARCHETYPES.grunt });
+
+  // Each player mech starts the game with one free demo charge so the
+  // first orbital drop point is always within tactical reach.
+  for (const u of units) {
+    if (u.team === 1 && u.archetypeKey === 'elite') {
+      const charge = makeDemoCharge();
+      addItem(u.inventory, charge); // never fails: empty backpack guaranteed
+    }
+  }
 
   spawnInitialCrates();
+  spawnInitialSpawnPoints();
 
   renderTurnInfo();
   renderDashboard();
-  setStatus("Red team's turn. Walk to a supply crate and click it to open.");
+  setStatus(
+    "Red team's turn. Each mech carries a demo charge — use it on an orbital drop pad.",
+  );
 })();
 
 // ----- Turn state ----------------------------------------------------------
@@ -451,17 +832,33 @@ function endTurn(): void {
 /** Internal — the actual turn-flip logic, callable by both UI + AI. */
 function doEndTurn(): void {
   if (gameOver) return;
+  // Cancel any in-progress nuke targeting — you don't get to lob it
+  // across turn boundaries.
+  if (mode === 'nukeTargeting') {
+    nukeContext = null;
+    mode = selectedId ? 'selected' : 'idle';
+  }
   // Switch teams; turnNumber increments only when blue → red wraps.
   currentTeam = currentTeam === 1 ? 2 : 1;
   if (currentTeam === 1) turnNumber += 1;
 
-  // Refill AP for the new active team (immobilised mechs still refill, but
-  // they can't spend it — kept for symmetry if they become un-immobilised).
+  // Refill AP for the new active team. STUNNED units burn one stun
+  // tick instead of refilling — they wake up next turn but lose this
+  // one. Immobilised units still refill (kept for symmetry if they're
+  // released later); they just can't spend AP.
   for (const u of units) {
-    if (u.team === currentTeam && !u.destroyed) {
+    if (u.team !== currentTeam || u.destroyed) continue;
+    if (u.stunnedTurns > 0) {
+      u.ap = 0;
+      u.stunnedTurns -= 1;
+    } else {
       u.ap = u.maxAp.effective;
     }
   }
+
+  // (Spawn + AI handoff are dispatched together at the bottom — we need
+  //  to await spawn point ticks BEFORE the AI starts so it can plan
+  //  around the new arrivals.)
 
   // Deselect anyone whose team isn't active.
   if (selectedId) {
@@ -484,9 +881,23 @@ function doEndTurn(): void {
   checkWinCondition();
   if (gameOver) return;
 
-  // Hand off to the AI if the new active team is computer-controlled.
+  // Start-of-turn pipeline (spawn → AI). Always async so we don't block
+  // the click handler.
+  void runStartOfTurn();
+}
+
+/**
+ * Runs at the start of every turn (after teams have already flipped).
+ * Handles spawn-point ticks for team 2, then hands off to the AI if
+ * the active team is computer-controlled.
+ */
+async function runStartOfTurn(): Promise<void> {
+  if (currentTeam === 2) {
+    await tickSpawnPoints();
+    if (gameOver) return;
+  }
   if (teamControllers[currentTeam] === 'ai') {
-    void runAiTurn();
+    await runAiTurn();
   }
 }
 endTurnBtn.addEventListener('click', endTurn);
@@ -584,13 +995,28 @@ function renderGameOver(): void {
 
 // ----- Interaction state machine -------------------------------------------
 
-type InteractionMode = 'idle' | 'selected' | 'animating';
+type InteractionMode = 'idle' | 'selected' | 'animating' | 'nukeTargeting';
 
 let selectedId: string | null = null;
 let mode: InteractionMode = 'idle';
 
 /** Map "q_r" → AP cost to reach, set when a unit is selected. */
 let reachableForSelected: Map<string, number> = new Map();
+
+/**
+ * When a player clicks a tactical nuke in inventory, we transition to
+ * 'nukeTargeting' mode. We need to remember who's holding the nuke and
+ * which slot it lives in so a successful detonation consumes the right
+ * item. `range` is the maximum hex distance the player can lob.
+ */
+interface NukeTargetingContext {
+  unit: Unit;
+  item: Item;
+  addr: SlotAddress;
+  range: number;
+}
+let nukeContext: NukeTargetingContext | null = null;
+const NUKE_RANGE = 3;
 
 picker.setEvents({
   onTileHover(tile) {
@@ -600,6 +1026,12 @@ picker.setEvents({
 
   onUnitClick(unitId) {
     if (mode === 'animating' || gameOver || aiActive) return;
+    // Clicking anything other than a tile while nuke-targeting cancels
+    // the launch (no propagation — keep clicks predictable).
+    if (mode === 'nukeTargeting') {
+      cancelNukeTargeting('Nuke launch cancelled.');
+      return;
+    }
 
     const target = units.find((u) => u.id === unitId);
     if (!target || target.destroyed) return;
@@ -635,6 +1067,10 @@ picker.setEvents({
 
   onTerrainClick(terrainId) {
     if (mode === 'animating' || gameOver || aiActive) return;
+    if (mode === 'nukeTargeting') {
+      cancelNukeTargeting('Nuke launch cancelled.');
+      return;
+    }
     const terrain = terrainPieces.find((t) => t.id === terrainId);
     if (!terrain || terrain.destroyed) return;
 
@@ -648,6 +1084,10 @@ picker.setEvents({
 
   onCrateClick(crateId) {
     if (mode === 'animating' || gameOver || aiActive) return;
+    if (mode === 'nukeTargeting') {
+      cancelNukeTargeting('Nuke launch cancelled.');
+      return;
+    }
     const crate = crates.find((c) => c.id === crateId);
     if (!crate) return;
 
@@ -672,6 +1112,19 @@ picker.setEvents({
 
   onTileClick(tile) {
     if (mode === 'animating' || gameOver || aiActive) return;
+
+    if (mode === 'nukeTargeting') {
+      if (!nukeContext) {
+        cancelNukeTargeting();
+        return;
+      }
+      if (!isValidNukeTarget(tile)) {
+        cancelNukeTargeting('Nuke launch cancelled — target out of range.');
+        return;
+      }
+      void fireTacticalNuke(tile);
+      return;
+    }
 
     const shooter = selectedId ? units.find((u) => u.id === selectedId) : null;
     if (!shooter || shooter.destroyed) {
@@ -713,10 +1166,13 @@ function describeSelection(unit: Unit): string {
     `HP ${unit.hp}/${unit.maxHp.effective}, ` +
     `range ${unit.attackRange.effective}, dmg ${unit.damage.effective}. `;
   if (unit.immobilised) return head + `IMMOBILISED — cannot act this game.`;
+  if (unit.stunnedTurns > 0) {
+    return head + `STUNNED — skipping ${unit.stunnedTurns} more own-team turn${unit.stunnedTurns > 1 ? 's' : ''}.`;
+  }
 
   const crate = crateAt(unit.tile);
   if (crate && unit.ap >= CRATE_OPEN_AP_COST) {
-    return head + `Click your tile (or the crate) to open it for 1 AP.`;
+    return head + `Click your tile (or the crate) to open it for 1 AP — beware traps.`;
   }
   return head + (unit.ap > 0
     ? `Green = move, red = fire.`
@@ -724,6 +1180,8 @@ function describeSelection(unit: Unit): string {
 }
 
 function deselect(): void {
+  // If we were mid-nuke launch, abort cleanly before wiping state.
+  if (mode === 'nukeTargeting') nukeContext = null;
   selectedId = null;
   mode = 'idle';
   reachableForSelected = new Map();
@@ -732,18 +1190,37 @@ function deselect(): void {
 }
 
 function recomputeReachable(unit: Unit): void {
-  if (unit.immobilised) {
+  if (unit.immobilised || unit.ap <= 0) {
     // Start hex only — no other reachable tiles.
     reachableForSelected = new Map([[hexKey(unit.tile), 0]]);
     return;
   }
+  // Burst units that have already spent their move action this turn
+  // (e.g. shot first) shouldn't show any reachable hexes — we can't
+  // detect "already moved" right now (no per-turn flag), so use AP as
+  // the gate: 0 AP = nothing reachable; otherwise the full burst range.
   const pf = makePathfinder(unit);
-  reachableForSelected = pf.reachable(unit.tile, unit.ap);
+  reachableForSelected = pf.reachable(unit.tile, moveBudget(unit));
 }
 
 function refreshTileVisuals(hover: HexCoord | null): void {
   board.clearAllStates();
   if (gameOver) return;
+
+  // Nuke-targeting overlay short-circuits the normal selection visuals:
+  // we light up every tile within nuke range and let the firer's own
+  // tile read as the launch point. Hover still highlights the cursor.
+  if (mode === 'nukeTargeting' && nukeContext) {
+    const u = nukeContext.unit;
+    for (const tile of board.hexes) {
+      if (hexDistance(u.tile, tile) <= nukeContext.range && !hexEquals(tile, u.tile)) {
+        board.setTileState(tile, 'attack');
+      }
+    }
+    board.setTileState(u.tile, 'selected');
+    if (hover && board.has(hover)) board.setTileState(hover, 'hover');
+    return;
+  }
 
   const sel = selectedId ? units.find((u) => u.id === selectedId) : null;
 
@@ -783,8 +1260,177 @@ function refreshTileVisuals(hover: HexCoord | null): void {
   if (hover && board.has(hover)) board.setTileState(hover, 'hover');
 }
 
+// ----- Move-cost overlay ---------------------------------------------------
+//
+// Renders small "1 AP" / "2 AP" badges over the six neighbors of the
+// currently selected mech so the player can read movement costs at a
+// glance. Lives in DOM (not WebGL) so badges stay crisp at any zoom.
+// Toggled via the settings checkbox inside the hamburger menu.
+
+const _projectVec = new THREE.Vector3();
+const moveCostLabels: HTMLDivElement[] = [];
+
+function ensureMoveCostLabel(idx: number): HTMLDivElement {
+  let el = moveCostLabels[idx];
+  if (el) return el;
+  el = document.createElement('div');
+  el.className = 'move-cost-label';
+  el.style.display = 'none';
+  moveCostLayerEl.appendChild(el);
+  moveCostLabels[idx] = el;
+  return el;
+}
+
+function hideAllMoveCostLabels(): void {
+  for (const el of moveCostLabels) {
+    if (el) el.style.display = 'none';
+  }
+}
+
+/**
+ * Recompute label positions + visibility for the current selection.
+ * Safe to call every frame; bails out fast when nothing's selected
+ * or the setting is off.
+ */
+function updateMoveCostOverlay(): void {
+  if (
+    !settings.showMoveCost ||
+    !selectedId ||
+    mode === 'nukeTargeting' ||
+    mode === 'animating' ||
+    aiActive ||
+    gameOver
+  ) {
+    hideAllMoveCostLabels();
+    return;
+  }
+  const sel = units.find((u) => u.id === selectedId);
+  if (!sel || sel.destroyed || sel.immobilised) {
+    hideAllMoveCostLabels();
+    return;
+  }
+  // Only show for the active human team so it doesn't get used as an
+  // intel cheat-sheet during enemy turns.
+  if (sel.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
+    hideAllMoveCostLabels();
+    return;
+  }
+
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (w === 0 || h === 0) {
+    hideAllMoveCostLabels();
+    return;
+  }
+
+  for (let i = 0; i < HEX_DIRS.length; i++) {
+    const dir = HEX_DIRS[i];
+    const tile: HexCoord = { q: sel.tile.q + dir.q, r: sel.tile.r + dir.r };
+    const el = ensureMoveCostLabel(i);
+
+    if (!board.has(tile) || blockingTerrainAt(tile) || unitAt(tile)) {
+      el.style.display = 'none';
+      continue;
+    }
+
+    const cost = apCostToEnter(tile);
+    const world = board.tileToWorld(tile);
+    _projectVec.set(world.x, world.y + 0.55, world.z);
+    _projectVec.project(isoCam.camera);
+
+    // Clip if behind / outside the view frustum.
+    if (_projectVec.z < -1 || _projectVec.z > 1) {
+      el.style.display = 'none';
+      continue;
+    }
+
+    const x = ((_projectVec.x + 1) / 2) * w;
+    const y = ((-_projectVec.y + 1) / 2) * h;
+
+    el.textContent = `${cost} AP`;
+    el.classList.toggle('expensive', cost >= 2);
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.style.display = 'block';
+  }
+}
+
+// ----- Turn-in-place action ------------------------------------------------
+//
+// After moving, a mech faces its last step direction automatically. To
+// re-orient WITHOUT moving (e.g. to set up next turn's attack arc) the
+// player presses [,] / [.] to pivot 60° per press. Heavy chassis pay
+// 1 AP per pivot; light & medium pivot for free.
+
+const TURN_DEG = 60;
+
+function turnApCost(unit: Unit): number {
+  return unit.chassis === 'heavy' ? 1 : 0;
+}
+
+/**
+ * Pivot the unit's facing by ±60°. Returns true on success.
+ * Validates AP / team / stun / etc; emits status messages on failure.
+ */
+function doTurnUnit(unit: Unit, direction: 'left' | 'right'): boolean {
+  if (gameOver || mode === 'animating' || aiActive) return false;
+  if (mode === 'nukeTargeting') return false;
+  if (unit.destroyed) return false;
+  if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
+    setStatus(`Not ${teamName(unit.team)}'s turn.`);
+    return false;
+  }
+  if (unit.immobilised) {
+    setStatus(`${describeUnit(unit)} is immobilised and cannot turn.`);
+    return false;
+  }
+  if (unit.stunnedTurns > 0) {
+    setStatus(`${describeUnit(unit)} is stunned — can't turn this turn.`);
+    return false;
+  }
+
+  const cost = turnApCost(unit);
+  if (cost > 0 && unit.ap < cost) {
+    setStatus(
+      `${describeUnit(unit)} needs ${cost} AP to pivot (heavy chassis). ` +
+      `Has ${unit.ap}.`,
+    );
+    return false;
+  }
+
+  const delta = direction === 'left' ? -TURN_DEG : TURN_DEG;
+  unit.facingDeg = ((unit.facingDeg + delta) % 360 + 360) % 360;
+  unit.mech.setFacing(unit.facingDeg);
+
+  if (cost > 0) {
+    unit.ap -= cost;
+    setStatus(
+      `${describeUnit(unit)} pivoted ${direction} (-${cost} AP). ` +
+      `(${unit.ap}/${unit.maxAp.effective} AP left.)`,
+    );
+  } else {
+    setStatus(`${describeUnit(unit)} pivoted ${direction}.`);
+  }
+
+  refreshAfterAction();
+  renderDashboard();
+  return true;
+}
+
+// Global keybindings for unit pivot.
+window.addEventListener('keydown', (e) => {
+  if (e.key !== ',' && e.key !== '.') return;
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON') return;
+  if (!selectedId) return;
+  const u = units.find((x) => x.id === selectedId);
+  if (!u) return;
+  e.preventDefault();
+  doTurnUnit(u, e.key === ',' ? 'left' : 'right');
+});
+
 function describeUnit(u: Unit): string {
-  return `${teamName(u.team)} ${u.chassis} ${u.id.toUpperCase()}`;
+  return `${teamName(u.team)} ${u.className} ${u.id.toUpperCase()}`;
 }
 
 function describeTerrain(t: TerrainPiece): string {
@@ -802,28 +1448,39 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
     setStatus(`${describeUnit(unit)} is immobilised and cannot move.`);
     return;
   }
+  if (unit.stunnedTurns > 0) {
+    setStatus(`${describeUnit(unit)} is stunned — can't move this turn.`);
+    return;
+  }
   const pf = makePathfinder(unit);
-  const path = pf.findPath(unit.tile, dest, unit.ap);
+  const path = pf.findPath(unit.tile, dest, moveBudget(unit));
   if (!path || path.length === 0) return;
 
-  const cost = pf.pathCost(path);
-  if (cost > unit.ap) {
+  const apCost = moveActionApCost(unit, path);
+  if (apCost > unit.ap) {
     setStatus(
-      `Path costs ${cost} AP but ${describeUnit(unit)} only has ${unit.ap}.`,
+      `Move costs ${apCost} AP but ${describeUnit(unit)} only has ${unit.ap}.`,
     );
     return;
   }
 
   mode = 'animating';
   board.clearAllStates();
-  setStatus(`${describeUnit(unit)} moving (${cost} AP)…`);
+  const costLabel = unit.movementMode === 'burst'
+    ? `1 AP / ${path.length} hex`
+    : `${apCost} AP`;
+  setStatus(`${describeUnit(unit)} moving (${costLabel})…`);
 
   unit.mech.playAnimation('walk');
+
+  // Burst-move units pay the AP up-front and the per-step deduction is
+  // skipped; per-hex units keep the existing pay-as-you-go behavior.
+  if (unit.movementMode === 'burst') unit.ap -= 1;
 
   for (const step of path) {
     await animateStep(unit, step);
     unit.tile = step;
-    unit.ap -= apCostToEnter(step);
+    if (unit.movementMode === 'per-hex') unit.ap -= apCostToEnter(step);
     renderDashboard();
 
     // Step-on effects: only mines auto-trigger. Supply crates require
@@ -892,15 +1549,24 @@ function inventorySpace(unit: Unit): { handFree: boolean; backpackFree: boolean 
 /**
  * Attempts to open `crate` with `unit`. Validates that the unit is on
  * the same hex, has AP, and has at least one inventory slot free. On
- * success: rolls a random item (constrained to free slot kinds),
- * routes it to the right slot, applies any passive, despawns the
- * crate, and shows the item-reveal card on the side.
+ * success: rolls for a trap first; if no trap, rolls a random item
+ * and routes it to the inventory. Either way the crate despawns.
+ *
+ * Traps replace the item drop (you spent the AP but get a bad outcome
+ * instead). Trap kinds:
+ *   - 'enemy'     : warps in a hostile mech adjacent to the opener
+ *   - 'explosion' : mega-damage to the opener (bypasses armor)
+ *   - 'stun'      : opener loses their next own-team turn
  */
 function openCrate(unit: Unit, crate: CrateEntity): void {
   if (gameOver || mode === 'animating' || aiActive) return;
   if (unit.destroyed) return;
   if (unit.immobilised) {
     setStatus(`${describeUnit(unit)} is immobilised and cannot interact.`);
+    return;
+  }
+  if (unit.stunnedTurns > 0) {
+    setStatus(`${describeUnit(unit)} is stunned — can't open crates this turn.`);
     return;
   }
   if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
@@ -916,33 +1582,47 @@ function openCrate(unit: Unit, crate: CrateEntity): void {
     return;
   }
 
-  const space = inventorySpace(unit);
-  if (!space.handFree && !space.backpackFree) {
-    setStatus(`${describeUnit(unit)}'s inventory is full — drop something or use a consumable first.`);
+  // Roll for trap BEFORE inventory check — the player can trip a trap
+  // even with a full pack (you don't need slot space for a booby trap).
+  const trap = rollCrateTrap();
+
+  if (!trap) {
+    // Normal item drop — requires at least one free slot.
+    const space = inventorySpace(unit);
+    if (!space.handFree && !space.backpackFree) {
+      setStatus(`${describeUnit(unit)}'s inventory is full — drop something or use a consumable first.`);
+      return;
+    }
+    unit.ap -= CRATE_OPEN_AP_COST;
+    completeCrateAsItem(unit, crate, space);
     return;
   }
 
-  // Commit: spend AP, roll item, route.
+  // Trapped! Spend the AP, despawn the crate, fire the effect.
   unit.ap -= CRATE_OPEN_AP_COST;
+  completeCrateAsTrap(unit, crate, trap);
+}
+
+/** Normal-item completion of an open (already AP-deducted). */
+function completeCrateAsItem(
+  unit: Unit,
+  crate: CrateEntity,
+  space: { handFree: boolean; backpackFree: boolean },
+): void {
   const item = rollItem(space);
   if (!item) {
-    // Shouldn't be reachable given the space check above, but be safe.
     setStatus(`Crate was empty.`);
     renderDashboard();
     return;
   }
-
   const addr = addItem(unit.inventory, item);
   if (!addr) {
-    // Defensive: addItem failed despite the space check (e.g., item kind
-    // we don't have room for — rollItem already filters but stay safe).
     setStatus(`${describeUnit(unit)} couldn't fit ${item.name}.`);
     renderDashboard();
     return;
   }
   applyItemPassive(unit, item);
 
-  // Small FX where the crate stood.
   const cw = new THREE.Vector3();
   crate.mesh.group.getWorldPosition(cw);
   fx.impact({ position: cw });
@@ -957,6 +1637,136 @@ function openCrate(unit: Unit, crate: CrateEntity): void {
   renderDashboard();
 }
 
+/** Trap completion of an open (already AP-deducted). */
+function completeCrateAsTrap(
+  unit: Unit,
+  crate: CrateEntity,
+  trap: CrateTrapOutcome,
+): void {
+  const crateWorld = new THREE.Vector3();
+  crate.mesh.group.getWorldPosition(crateWorld);
+
+  despawnCrate(crate);
+  showTrapCard(trap);
+
+  switch (trap.kind) {
+    case 'explosion':
+      void runExplosionTrap(unit, trap, crateWorld);
+      break;
+    case 'stun':
+      runStunTrap(unit, trap, crateWorld);
+      break;
+    case 'enemy':
+      void runEnemyAmbushTrap(unit, trap, crate.tile);
+      break;
+  }
+}
+
+/**
+ * Booby-trap: deals trap.damage to the opener (bypasses armor — it's a
+ * point-blank explosive, not a ranged shot).
+ */
+async function runExplosionTrap(
+  unit: Unit,
+  trap: CrateTrapOutcome,
+  blast: THREE.Vector3,
+): Promise<void> {
+  fx.impact({ position: blast });
+  fx.explosion({ position: blast, scale: 1.4 });
+  unit.mech.playAnimation('hit');
+
+  const dmg = trap.damage;
+  unit.hp = Math.max(0, unit.hp - dmg);
+  unit.mech.setDamageLevel(
+    Math.min(1, (unit.maxHp.effective - unit.hp) / unit.maxHp.effective),
+  );
+
+  if (unit.hp <= 0) {
+    unit.destroyed = true;
+    unit.mech.playAnimation('destroyed');
+    setStatus(`${describeUnit(unit)} triggered ${trap.label} for ${dmg} damage — destroyed!`);
+    sinkUnitWreckage(unit);
+    renderDashboard();
+    checkWinCondition();
+    return;
+  }
+
+  setStatus(
+    `${describeUnit(unit)} triggered ${trap.label} for ${dmg} damage. ` +
+    `(HP ${unit.hp}/${unit.maxHp.effective})`,
+  );
+  refreshAfterAction();
+  renderDashboard();
+}
+
+/** Stun-trap: opener loses their next own-team turn. */
+function runStunTrap(unit: Unit, trap: CrateTrapOutcome, where: THREE.Vector3): void {
+  fx.impact({ position: where });
+  unit.stunnedTurns = Math.max(unit.stunnedTurns, trap.stunTurns);
+  unit.mech.playAnimation('hit');
+  setStatus(
+    `${describeUnit(unit)} hit by ${trap.label} — stunned for ${trap.stunTurns} turn` +
+    (trap.stunTurns > 1 ? 's' : '') + `.`,
+  );
+  refreshAfterAction();
+  renderDashboard();
+}
+
+/**
+ * Ambush-trap: spawn a hostile mech on a random adjacent empty tile.
+ * Falls back to an explosion if there's no spot to drop the new mech.
+ */
+async function runEnemyAmbushTrap(
+  unit: Unit,
+  trap: CrateTrapOutcome,
+  crateTile: HexCoord,
+): Promise<void> {
+  const spotTile = findAdjacentSpawnTile(crateTile);
+  if (!spotTile) {
+    // Crate is wedged in — no room to ambush; fall back to a small boom.
+    const where = new THREE.Vector3();
+    unit.mech.object.getWorldPosition(where);
+    where.y = TILE_TOP_Y + 0.4;
+    fx.explosion({ position: where, scale: 1.0 });
+    setStatus(`${trap.label} fizzles — no adjacent tile to drop an attacker.`);
+    refreshAfterAction();
+    renderDashboard();
+    return;
+  }
+
+  const arch = rollEnemyArchetype();
+  const id = `s${++_spawnedEnemySeq}`;
+
+  // Face the new arrival toward the opener for menace.
+  const facing = hexFacingDegrees(spotTile, crateTile);
+  await placeMech({ id, team: 2, tile: spotTile, facingDeg: facing, archetype: arch });
+
+  // Warp-in beam.
+  const flash = createSpawnFlash(arch.haloColor);
+  const p = board.tileToWorld(spotTile);
+  flash.group.position.set(p.x, TILE_TOP_Y, p.z);
+  stage.scene.add(flash.group);
+  activeSpawnFlashes.push(flash);
+
+  setStatus(`${trap.label}! A ${arch.displayName} drops in at (${spotTile.q},${spotTile.r}).`);
+  refreshAfterAction();
+  renderDashboard();
+}
+
+/** Pick a random adjacent hex that's in-bounds, empty, and walkable. */
+function findAdjacentSpawnTile(origin: HexCoord): HexCoord | null {
+  const candidates: HexCoord[] = [];
+  for (const dir of HEX_DIRS) {
+    const h: HexCoord = { q: origin.q + dir.q, r: origin.r + dir.r };
+    if (!map.hasTile(h)) continue;
+    if (unitAt(h)) continue;
+    if (blockingTerrainAt(h)) continue;
+    candidates.push(h);
+  }
+  if (candidates.length === 0) return null;
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
 /**
  * Triggers any enemy mine on `unit.tile`. Returns true if the unit was
  * destroyed by the blast (so the walk loop can short-circuit).
@@ -966,7 +1776,10 @@ function triggerMineFor(unit: Unit): boolean {
   if (!mine) return false;
   if (mine.placerTeam === unit.team) return false; // friendly mine — inert
 
-  const dmg = mine.damage;
+  const rawDmg = mine.damage;
+  const dmg = applyArmor(rawDmg, unit.armorThreshold);
+  const deflected = rawDmg > 0 && dmg === 0;
+
   const p = board.tileToWorld(unit.tile);
   const blast = new THREE.Vector3(p.x, TILE_TOP_Y + 0.4, p.z);
   fx.impact({ position: blast });
@@ -978,6 +1791,15 @@ function triggerMineFor(unit: Unit): boolean {
   );
 
   despawnMine(mine);
+
+  if (deflected) {
+    unit.mech.playAnimation('hit');
+    setStatus(
+      `${describeUnit(unit)} stepped on a mine — ARMOR DEFLECTED ${formatDamage(rawDmg)} damage.`,
+    );
+    renderDashboard();
+    return false;
+  }
 
   if (unit.hp <= 0) {
     unit.destroyed = true;
@@ -1017,6 +1839,10 @@ function useItemFromSlot(unit: Unit, addr: SlotAddress): void {
     setStatus(`${describeUnit(unit)} is immobilised and cannot use items.`);
     return;
   }
+  if (unit.stunnedTurns > 0) {
+    setStatus(`${describeUnit(unit)} is stunned — can't use items this turn.`);
+    return;
+  }
   if (!item.active) {
     setStatus(`${item.name} is a passive item — already in effect.`);
     return;
@@ -1028,8 +1854,10 @@ function useItemFromSlot(unit: Unit, addr: SlotAddress): void {
   }
 
   switch (item.active.kind) {
-    case 'heal':      doHeal(unit, item, addr); return;
-    case 'placeMine': doPlaceMine(unit, item, addr); return;
+    case 'heal':         doHeal(unit, item, addr); return;
+    case 'placeMine':    doPlaceMine(unit, item, addr); return;
+    case 'destroySpawn': doDestroySpawn(unit, item, addr); return;
+    case 'tacticalNuke': enterNukeTargeting(unit, item, addr); return;
   }
 }
 
@@ -1078,6 +1906,229 @@ function doPlaceMine(unit: Unit, item: Item, addr: SlotAddress): void {
   renderDashboard();
 }
 
+/**
+ * Demo charge — destroys the closest orbital drop point within 1 hex
+ * of the user (i.e. on the user's tile or any neighbor). If no drop
+ * pad is in range, the item is NOT consumed (it's too valuable to
+ * fat-finger).
+ */
+function doDestroySpawn(unit: Unit, item: Item, addr: SlotAddress): void {
+  const candidates = spawnPoints
+    .filter((sp) => hexDistance(unit.tile, sp.tile) <= 1)
+    .sort((a, b) => hexDistance(unit.tile, a.tile) - hexDistance(unit.tile, b.tile));
+
+  if (candidates.length === 0) {
+    setStatus(
+      `${describeUnit(unit)} can't plant ${item.name} here — no orbital ` +
+      `drop point on or adjacent to this hex.`,
+    );
+    return;
+  }
+
+  const target = candidates[0];
+  unit.ap -= item.active!.apCost;
+  consumeItem(unit, item, addr);
+
+  // Visual flourish — flash + impact + a one-shot warp-style burst.
+  const padWorld = new THREE.Vector3();
+  target.mesh.group.getWorldPosition(padWorld);
+  fx.impact({ position: padWorld });
+  fx.explosion({ position: padWorld, scale: 1.2 });
+  const flash = createSpawnFlash('#ff9b4d', 0.7);
+  flash.group.position.copy(padWorld);
+  stage.scene.add(flash.group);
+  activeSpawnFlashes.push(flash);
+
+  despawnSpawnPoint(target);
+
+  setStatus(
+    `${describeUnit(unit)} planted ${item.name} on the orbital drop pad at ` +
+    `(${target.tile.q},${target.tile.r}) — pad destroyed, no more reinforcements from there.`,
+  );
+  refreshAfterAction();
+  renderDashboard();
+}
+
+/**
+ * Enter the nuke-targeting interaction mode. Tile clicks become launch
+ * commands; everything else cancels (handled centrally in the picker
+ * event handlers).
+ */
+function enterNukeTargeting(unit: Unit, item: Item, addr: SlotAddress): void {
+  if (mode === 'nukeTargeting' && nukeContext && nukeContext.item.id === item.id) {
+    // Same nuke clicked twice → toggle off.
+    cancelNukeTargeting('Nuke launch cancelled.');
+    return;
+  }
+  if (mode === 'nukeTargeting') {
+    // Different nuke / different unit — drop the previous context first.
+    cancelNukeTargeting();
+  }
+
+  selectedId = unit.id;
+  mode = 'nukeTargeting';
+  nukeContext = { unit, item, addr, range: NUKE_RANGE };
+  refreshTileVisuals(null);
+  renderDashboard();
+  setStatus(
+    `${describeUnit(unit)} arming ${item.name}. Click a red tile within ` +
+    `${nukeContext.range} hexes to launch — anywhere else cancels. ` +
+    `${item.active!.amount} GIGA-damage in a 3-hex blast, bypasses armor.`,
+  );
+}
+
+function cancelNukeTargeting(reason?: string): void {
+  if (mode !== 'nukeTargeting') return;
+  nukeContext = null;
+  mode = selectedId ? 'selected' : 'idle';
+  refreshTileVisuals(null);
+  renderDashboard();
+  if (reason) setStatus(reason);
+}
+
+function isValidNukeTarget(tile: HexCoord): boolean {
+  if (!nukeContext) return false;
+  if (!board.has(tile)) return false;
+  if (hexEquals(tile, nukeContext.unit.tile)) return false; // can't target your own hex
+  return hexDistance(nukeContext.unit.tile, tile) <= nukeContext.range;
+}
+
+/**
+ * Fully resolve a tactical nuke launch. We snapshot the context up front
+ * because mode flips out from under us during the animation phase.
+ *
+ * Damage model:
+ *   - 3-hex blast pattern (`nukeBlastHexes`): target + the two farthest
+ *     adjacents from the firer.
+ *   - `damage` HP per affected hex — same per unit, per terrain piece.
+ *   - GIGA damage: armor threshold is ignored. Friendly fire applies.
+ *   - Buildings on the LINE between firer and target absorb the warhead
+ *     (`resolveNukeTrajectory`) — the nuke detonates on the blocker
+ *     instead of the requested tile.
+ */
+async function fireTacticalNuke(target: HexCoord): Promise<void> {
+  if (!nukeContext) return;
+  const ctx = nukeContext;
+  const { unit, item, addr } = ctx;
+  const damage = item.active!.amount;
+
+  // 1) Spend AP + consume the item up front so a mid-animation game
+  // over still resolves cleanly.
+  unit.ap -= item.active!.apCost;
+  consumeItem(unit, item, addr);
+  nukeContext = null;
+  mode = 'animating';
+  refreshTileVisuals(null);
+  renderDashboard();
+
+  // 2) Resolve trajectory — does a building intercept the warhead?
+  const isBuildingBlocker = (h: HexCoord): boolean => {
+    const t = terrainAt(h);
+    return !!t && !t.destroyed && t.kind === 'building';
+  };
+  const traj = resolveNukeTrajectory(
+    unit.tile,
+    target,
+    hexLineBetween,
+    isBuildingBlocker,
+    hexKey,
+  );
+  const effective = traj.effectiveTarget;
+
+  // 3) Pick the 3-hex blast pattern around the effective target.
+  const blastHexes = nukeBlastHexes(unit.tile, effective, (h) => board.has(h));
+  const uniqueKeys = new Set<string>();
+  const blastUnique: HexCoord[] = [];
+  for (const h of blastHexes) {
+    const k = hexKey(h);
+    if (uniqueKeys.has(k)) continue;
+    uniqueKeys.add(k);
+    blastUnique.push(h);
+  }
+
+  // 4) Big synchronous fireworks — impact + explosion on every hex.
+  for (const h of blastUnique) {
+    const p = board.tileToWorld(h);
+    const where = new THREE.Vector3(p.x, TILE_TOP_Y + 0.4, p.z);
+    fx.impact({ position: where });
+    fx.explosion({ position: where, scale: 1.5 });
+  }
+
+  // 5) Apply damage. Track hit log for the status line.
+  const hitLog: string[] = [];
+  for (const h of blastUnique) {
+    // Units
+    const target = unitAt(h);
+    if (target && !target.destroyed) {
+      const before = target.hp;
+      target.hp = Math.max(0, target.hp - damage); // bypass armor
+      target.mech.setDamageLevel(
+        Math.min(1, (target.maxHp.effective - target.hp) / target.maxHp.effective),
+      );
+      target.mech.playAnimation('hit');
+
+      if (target.hp <= 0) {
+        target.destroyed = true;
+        const torso = target.mech.getAttachPoint('torso');
+        if (torso) {
+          const w = new THREE.Vector3();
+          torso.getWorldPosition(w);
+          fx.explosion({ position: w, scale: 1.4 });
+        }
+        target.mech.playAnimation('destroyed');
+        sinkUnitWreckage(target);
+        hitLog.push(`destroyed ${describeUnit(target)}`);
+      } else {
+        hitLog.push(`${describeUnit(target)} -${before - target.hp} HP`);
+      }
+    }
+
+    // Terrain
+    const t = terrainAt(h);
+    if (t && t.hp !== undefined && !t.destroyed) {
+      const wasDestroyed = t.takeDamage(damage);
+      if (wasDestroyed && t.kind !== 'building') {
+        replaceWithRubble(t);
+      }
+    }
+  }
+
+  // 6) Also damage any building that absorbed the warhead in flight.
+  if (traj.blockedByTileKey) {
+    const blocker = terrainPieces.find(
+      (t) => !t.destroyed && hexKey(t.tile) === traj.blockedByTileKey,
+    );
+    if (blocker && blocker.hp !== undefined) {
+      const p = board.tileToWorld(blocker.tile);
+      fx.explosion({ position: new THREE.Vector3(p.x, TILE_TOP_Y + 0.4, p.z), scale: 1.3 });
+      const wasDestroyed = blocker.takeDamage(damage);
+      if (wasDestroyed && blocker.kind !== 'building') {
+        replaceWithRubble(blocker);
+      }
+    }
+  }
+
+  // 7) Status line.
+  const trajMsg = traj.blockedByTileKey
+    ? ` (warhead clipped a building en route at ${traj.blockedByTileKey.replace('_', ',')})`
+    : '';
+  const summary = hitLog.length > 0 ? hitLog.join('; ') : 'no targets caught in the blast';
+  setStatus(
+    `${describeUnit(unit)} launched ${item.name} → ` +
+    `(${effective.q},${effective.r})${trajMsg}. ${summary}.`,
+  );
+
+  // 8) Hand control back.
+  mode = selectedId ? 'selected' : 'idle';
+  if (selectedId) {
+    const s = units.find((u) => u.id === selectedId);
+    if (s && !s.destroyed) recomputeReachable(s);
+  }
+  refreshAfterAction();
+  renderDashboard();
+  checkWinCondition();
+}
+
 // ----- Combat --------------------------------------------------------------
 
 /**
@@ -1113,6 +2164,10 @@ async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
     setStatus(`${describeUnit(shooter)} is immobilised and cannot fire.`);
     return;
   }
+  if (shooter.stunnedTurns > 0) {
+    setStatus(`${describeUnit(shooter)} is stunned — can't fire this turn.`);
+    return;
+  }
   if (shooter.ap < AP_COST.shoot) {
     setStatus(`${describeUnit(shooter)} has no AP to fire.`);
     return;
@@ -1126,7 +2181,12 @@ async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
 
   const { mult, buildingsCrossed } = coverMultiplier(shooter.tile, target.tile);
   const hg = highGroundBonus(shooter, target);
-  const damage = (shooter.damage.effective + hg) * mult;
+  const rawDamage = (shooter.damage.effective + hg) * mult;
+  // Armor threshold applies LAST — after cover and high-ground are baked
+  // into a single per-shot value. Sub-threshold shots fully deflect.
+  const damage = applyArmor(rawDamage, target.armorThreshold);
+  const deflected = rawDamage > 0 && damage === 0;
+
   shooter.ap -= AP_COST.shoot;
   renderDashboard();
 
@@ -1153,7 +2213,12 @@ async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
   }
   const modStr = modBits.length > 0 ? ` ${modBits.join(', ')}` : '';
 
-  if (target.hp <= 0) {
+  if (deflected) {
+    setStatus(
+      `${describeUnit(target)} ARMOR DEFLECTS ${formatDamage(rawDamage)} damage ` +
+      `(needs ≥ ${target.armorThreshold} per shot).`,
+    );
+  } else if (target.hp <= 0) {
     target.destroyed = true;
     if (torsoTgt) fx.explosion({ position: targetWorld, scale: 1.4 });
     target.mech.playAnimation('destroyed');
@@ -1175,6 +2240,10 @@ async function fireAtTerrain(shooter: Unit, terrain: TerrainPiece): Promise<void
   if (gameOver) return;
   if (shooter.immobilised) {
     setStatus(`${describeUnit(shooter)} is immobilised and cannot fire.`);
+    return;
+  }
+  if (shooter.stunnedTurns > 0) {
+    setStatus(`${describeUnit(shooter)} is stunned — can't fire this turn.`);
     return;
   }
   if (terrain.hp === undefined) {
@@ -1291,6 +2360,11 @@ function sinkUnitWreckage(target: Unit): void {
 }
 
 function replaceWithRubble(terrain: TerrainPiece): void {
+  // Buildings self-transform across four destruction stages (intact →
+  // bombed-out → heavy rubble → rough terrain) — they own their own
+  // visual + walkability flips, so we never swap them out.
+  if (terrain.kind === 'building') return;
+
   picker.unregisterTerrain(terrain.id);
   stage.scene.remove(terrain.object);
   terrain.dispose();
@@ -1363,14 +2437,19 @@ function buildDashSlot(u: Unit): HTMLElement {
   const hpPct = maxHp > 0 ? Math.max(0, (u.hp / maxHp) * 100) : 0;
   const apPct = maxAp > 0 ? Math.max(0, (u.ap / maxAp) * 100) : 0;
 
-  const onCrate = !u.destroyed && !u.immobilised && crateAt(u.tile);
+  const onCrate = !u.destroyed && !u.immobilised && !u.stunnedTurns && crateAt(u.tile);
+  const armorBadge = u.armorThreshold > 0
+    ? `<span class="tag armored" title="Deflects damage below ${u.armorThreshold} per shot">ARMOR ${u.armorThreshold}</span>`
+    : '';
   const statusTag = u.destroyed
     ? '<span class="tag destroyed">DESTROYED</span>'
     : u.immobilised
       ? '<span class="tag immobilised">IMMOBILE</span>'
-      : onCrate
-        ? '<span class="tag crate">ON CRATE</span>'
-        : `<span class="tag">${u.chassis.toUpperCase()}</span>`;
+      : u.stunnedTurns > 0
+        ? `<span class="tag stunned">STUNNED (${u.stunnedTurns})</span>`
+        : onCrate
+          ? '<span class="tag crate">ON CRATE</span>'
+          : `<span class="tag">${u.className.toUpperCase()}</span>`;
 
   // Header + bars (click-to-select on header area).
   const header = document.createElement('div');
@@ -1378,7 +2457,7 @@ function buildDashSlot(u: Unit): HTMLElement {
   header.innerHTML = `
     <div class="dash-name">
       <span>${teamName(u.team)} ${u.id.toUpperCase()}</span>
-      ${statusTag}
+      <span class="tag-row">${armorBadge}${statusTag}</span>
     </div>
     <div class="dash-bar dash-hp">
       <label>HP</label>
@@ -1559,7 +2638,7 @@ function nearestEnemy(mech: Unit): Unit | null {
  */
 async function aiTryMoveToward(mech: Unit, target: Unit): Promise<boolean> {
   const pf = makePathfinder(mech);
-  const reach = pf.reachable(mech.tile, mech.ap);
+  const reach = pf.reachable(mech.tile, moveBudget(mech));
 
   let bestHex: HexCoord | null = null;
   let bestDist = hexDistance(mech.tile, target.tile);
@@ -1616,7 +2695,10 @@ interface InventorySnapshot {
 interface TackticusApi {
   units(): Array<{
     id: string; chassis: ChassisType; team: 1 | 2; tile: HexCoord;
-    destroyed: boolean; immobilised: boolean;
+    archetype: ArchetypeKey; className: string;
+    destroyed: boolean; immobilised: boolean; stunnedTurns: number;
+    armorThreshold: number;
+    movementMode: MovementMode; movementRange: number;
     ap: number; hp: number;
     maxAp: StatSnapshot; maxHp: StatSnapshot; damage: StatSnapshot; attackRange: StatSnapshot;
     inventory: InventorySnapshot;
@@ -1624,9 +2706,35 @@ interface TackticusApi {
   terrain(): Array<{
     id: string; kind: string; tile: HexCoord; destroyed: boolean;
     hp?: number; maxHp?: number; blocksMovement: boolean; walkable: boolean; topY: number;
+    /** Buildings expose 0-3 (intact → rough terrain). Other pieces: undefined. */
+    destructionStage?: 0 | 1 | 2 | 3;
   }>;
   crates(): Array<{ id: string; tile: HexCoord }>;
   mines(): Array<{ tile: HexCoord; damage: number; placerTeam: 1 | 2 }>;
+  /** List the team-2 orbital drop points. */
+  spawnPoints(): Array<{ id: string; tile: HexCoord }>;
+  /** Manually destroy a drop point by id. Returns true on success. */
+  destroySpawnPoint(id: string): boolean;
+  /**
+   * Detonate a tactical nuke from `unitId`'s position at the given
+   * target tile. Bypasses targeting UI / range / AP checks — purely
+   * for testing the blast resolution. Returns true on launch.
+   */
+  fireNuke(unitId: string, target: HexCoord, damage?: number): Promise<boolean>;
+  /**
+   * Force a drop-point cycle right now (independent of the turn flow).
+   * Returns the number of enemies dropped.
+   */
+  tickSpawnPoints(): Promise<number>;
+  /** Manually warp in an enemy of any archetype at any tile. */
+  spawnEnemy(archetype: ArchetypeKey, tile: HexCoord): Promise<string | null>;
+  /** Apply a stun (skip own-team turns) to a unit. Returns success. */
+  stun(unitId: string, turns: number): boolean;
+  /**
+   * Pivot the unit 60° in the given direction. Heavy chassis spends 1 AP,
+   * light/medium are free. Returns true on success.
+   */
+  turnUnit(unitId: string, direction: 'left' | 'right'): boolean;
   /**
    * Force-open a crate for the given unit (the unit must be on the
    * crate's tile and have 1 AP; obeys the same rules as a click).
@@ -1668,19 +2776,23 @@ interface TackticusApi {
 }
 
 type GiveItemSpec =
-  | { kind: 'weapon';      damage: number; name?: string }
-  | { kind: 'armor';       hp: number;     name?: string }
-  | { kind: 'rangeModule'; range: number;  name?: string }
-  | { kind: 'repairKit';   heal: number;   name?: string }
-  | { kind: 'mine';        damage: number; name?: string };
+  | { kind: 'weapon';       damage: number; name?: string }
+  | { kind: 'armor';        hp: number;     name?: string }
+  | { kind: 'rangeModule';  range: number;  name?: string }
+  | { kind: 'repairKit';    heal: number;   name?: string }
+  | { kind: 'mine';         damage: number; name?: string }
+  | { kind: 'demoCharge';   name?: string }
+  | { kind: 'tacticalNuke'; damage?: number; name?: string };
 
 function buildItemFromSpec(spec: GiveItemSpec): Item {
   switch (spec.kind) {
-    case 'weapon':      return makeWeapon(spec.damage, spec.name);
-    case 'armor':       return makeArmor(spec.hp, spec.name);
-    case 'rangeModule': return makeRangeModule(spec.range, spec.name);
-    case 'repairKit':   return makeRepairKit(spec.heal, spec.name);
-    case 'mine':        return makeMine(spec.damage, spec.name);
+    case 'weapon':       return makeWeapon(spec.damage, spec.name);
+    case 'armor':        return makeArmor(spec.hp, spec.name);
+    case 'rangeModule':  return makeRangeModule(spec.range, spec.name);
+    case 'repairKit':    return makeRepairKit(spec.heal, spec.name);
+    case 'mine':         return makeMine(spec.damage, spec.name);
+    case 'demoCharge':   return makeDemoCharge(spec.name);
+    case 'tacticalNuke': return makeTacticalNuke(spec.damage ?? 3, spec.name);
   }
 }
 
@@ -1723,7 +2835,10 @@ const api: TackticusApi = {
   units: () =>
     units.map((u) => ({
       id: u.id, chassis: u.chassis, team: u.team, tile: u.tile,
-      destroyed: u.destroyed, immobilised: u.immobilised,
+      archetype: u.archetypeKey, className: u.className,
+      destroyed: u.destroyed, immobilised: u.immobilised, stunnedTurns: u.stunnedTurns,
+      armorThreshold: u.armorThreshold,
+      movementMode: u.movementMode, movementRange: u.movementRange,
       ap: u.ap, hp: u.hp,
       maxAp: snapshot(u.maxAp),
       maxHp: snapshot(u.maxHp),
@@ -1736,11 +2851,60 @@ const api: TackticusApi = {
       id: t.id, kind: t.kind, tile: t.tile, destroyed: t.destroyed,
       hp: t.hp, maxHp: t.maxHp,
       blocksMovement: t.blocksMovement, walkable: t.walkable, topY: t.topY,
+      destructionStage: t.getDestructionStage?.(),
     })),
   crates: () =>
     crates.map((c) => ({ id: c.id, tile: { ...c.tile } })),
   mines: () =>
     mines.map((m) => ({ tile: { ...m.tile }, damage: m.damage, placerTeam: m.placerTeam })),
+  spawnPoints: () =>
+    spawnPoints.map((sp) => ({ id: sp.id, tile: { ...sp.tile } })),
+  destroySpawnPoint(id) {
+    const sp = spawnPoints.find((s) => s.id === id);
+    if (!sp) return false;
+    despawnSpawnPoint(sp);
+    setStatus(`Devtools: destroyed orbital drop pad ${id}.`);
+    return true;
+  },
+  async fireNuke(unitId, target, damage) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u || u.destroyed) return false;
+    // Synthesize a one-shot context that doesn't require the item to
+    // exist in inventory — devtools bypasses the targeting UI entirely.
+    const item = makeTacticalNuke(damage ?? 3);
+    const addr = addItem(u.inventory, item);
+    if (!addr) return false; // inventory full
+    nukeContext = { unit: u, item, addr, range: 999 };
+    mode = 'nukeTargeting';
+    await fireTacticalNuke(target);
+    return true;
+  },
+  tickSpawnPoints: () => tickSpawnPoints(),
+  async spawnEnemy(archetypeKey, tile) {
+    const arch = ARCHETYPES[archetypeKey];
+    if (!arch) return null;
+    if (!map.hasTile(tile)) return null;
+    if (unitAt(tile)) return null;
+    if (blockingTerrainAt(tile)) return null;
+    const id = `s${++_spawnedEnemySeq}`;
+    await placeMech({ id, team: 2, tile, facingDeg: 90, archetype: arch });
+    renderDashboard();
+    return id;
+  },
+  stun(unitId, turns) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u || u.destroyed) return false;
+    u.stunnedTurns = Math.max(0, Math.floor(turns));
+    if (u.team === currentTeam) u.ap = 0;
+    renderDashboard();
+    if (selectedId === u.id) setStatus(describeSelection(u));
+    return true;
+  },
+  turnUnit(unitId, direction) {
+    const u = units.find((x) => x.id === unitId);
+    if (!u) return false;
+    return doTurnUnit(u, direction);
+  },
   openCrate(unitId, crateId) {
     const u = units.find((x) => x.id === unitId);
     const c = crates.find((x) => x.id === crateId);
@@ -1864,6 +3028,12 @@ stage.addTicker((_dt, total) => {
   for (const m of mines)  m.mesh.tick(total);
 });
 
+// Move-cost overlay: keep the AP labels glued to their hexes as the
+// camera moves. Cheap — at most 6 DOM nodes are touched per frame.
+stage.addTicker(() => {
+  updateMoveCostOverlay();
+});
+
 let fpsAcc = 0;
 let fpsCount = 0;
 let fpsLastUpdate = 0;
@@ -1947,7 +3117,51 @@ function showItemCard(item: Item, addr: SlotAddress): void {
 function hideItemCard(): void {
   if (itemCardHideTimer !== null) window.clearTimeout(itemCardHideTimer);
   itemCardHideTimer = null;
-  itemCardEl?.classList.remove('visible');
+  itemCardEl?.classList.remove('visible', 'trap');
+}
+
+/**
+ * Trap version of the reveal card. Same DOM node, red theme, "TRAP!"
+ * banner instead of "SUPPLIES".
+ */
+function showTrapCard(trap: CrateTrapOutcome): void {
+  if (!itemCardEl) return;
+
+  const icon =
+    trap.kind === 'enemy' ? '!' :
+    trap.kind === 'explosion' ? '\u2620' : // skull
+                                '\u26A1';   // bolt
+  const color =
+    trap.kind === 'enemy' ? '#ff5c6c' :
+    trap.kind === 'explosion' ? '#ff9b4d' :
+                                '#ffce4d';
+
+  const effectLines: string[] = [];
+  if (trap.damage > 0)    effectLines.push(`Mega-damage: ${trap.damage} (bypasses armor)`);
+  if (trap.stunTurns > 0) effectLines.push(`Stun: skip ${trap.stunTurns} own-team turn` + (trap.stunTurns > 1 ? 's' : ''));
+  if (trap.kind === 'enemy') effectLines.push('Hostile reinforcement deployed adjacent');
+
+  itemCardEl.innerHTML = `
+    <div class="item-card-flash">! TRAP TRIGGERED !</div>
+    <div class="item-card-row">
+      <div class="item-card-icon" style="border-color:${color};color:${color};">${icon}</div>
+      <div class="item-card-title">
+        <div class="item-card-name" style="color:${color};">${escapeHtml(trap.label)}</div>
+        <div class="item-card-kind">${trap.kind.toUpperCase()} TRAP</div>
+      </div>
+    </div>
+    <div class="item-card-desc">${escapeHtml(trap.description)}</div>
+    ${effectLines.length
+      ? `<ul class="item-card-stats">${effectLines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+      : ''}
+  `;
+  itemCardEl.classList.add('visible', 'trap');
+
+  if (itemCardHideTimer !== null) window.clearTimeout(itemCardHideTimer);
+  itemCardHideTimer = window.setTimeout(() => {
+    itemCardEl.classList.remove('visible', 'trap');
+    itemCardHideTimer = null;
+  }, 7000);
 }
 
 function passiveStatLabel(stat: 'damage' | 'maxHp' | 'attackRange'): string {

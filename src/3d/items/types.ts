@@ -23,10 +23,24 @@
 // future server-authoritative mode.
 // ============================================================================
 
-export type ItemKind = 'weapon' | 'armor' | 'repairKit' | 'rangeModule' | 'mine';
+export type ItemKind =
+  | 'weapon'
+  | 'armor'
+  | 'repairKit'
+  | 'rangeModule'
+  | 'mine'
+  | 'demoCharge'
+  | 'tacticalNuke';
 export type SlotKind = 'hand' | 'backpack';
 export type PassiveStat = 'damage' | 'maxHp' | 'attackRange';
-export type ActiveKind = 'heal' | 'placeMine';
+/**
+ * Active item abilities.
+ *  - heal         : restore HP to the user
+ *  - placeMine    : drop a mine on the user's current hex
+ *  - destroySpawn : breach the closest orbital drop point in range
+ *  - tacticalNuke : enter targeting mode; on confirm detonate a 3-hex blast
+ */
+export type ActiveKind = 'heal' | 'placeMine' | 'destroySpawn' | 'tacticalNuke';
 
 export interface ItemPassive {
   /** Which of the carrier's Stats this modifier targets. */

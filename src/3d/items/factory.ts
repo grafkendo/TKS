@@ -98,3 +98,44 @@ export function makeMine(damage: number, name?: string): Item {
     active: { kind: 'placeMine', amount: damage, apCost: 1 },
   };
 }
+
+/**
+ * Demo charge — breaches an enemy orbital drop point. Must be standing
+ * ON or ADJACENT to the spawn point. One free copy is issued to each
+ * player mech at the start of the game.
+ */
+export function makeDemoCharge(name?: string): Item {
+  return {
+    id: uniqueItemId('demo'),
+    kind: 'demoCharge',
+    name: name ?? 'Demo Charge',
+    description:
+      'Plant on / next to an orbital drop point (1 AP). Destroys the pad — one fewer reinforcement spawn per turn.',
+    icon: 'D',
+    color: '#ff9b4d',
+    slotKind: 'backpack',
+    active: { kind: 'destroySpawn', amount: 0, apCost: 1 },
+  };
+}
+
+/**
+ * Tactical nuke — 3-hex GIGA-damage blast. Pick a target tile within
+ * range (default 3); the blast covers that tile plus two adjacent ones
+ * and deals `damage` HP per hex, bypassing armor entirely. Friendly
+ * fire applies. Buildings in the throw line absorb the warhead and the
+ * nuke detonates there instead.
+ */
+export function makeTacticalNuke(damage = 3, name?: string): Item {
+  return {
+    id: uniqueItemId('nuke'),
+    kind: 'tacticalNuke',
+    name: name ?? 'Tactical Nuke',
+    description:
+      `Lob to a target tile (2 AP, range 3). 3-hex blast — ${damage} GIGA-damage per hex, bypasses armor. ` +
+      `Friendly fire WILL apply. Buildings in the path detonate the warhead early.`,
+    icon: 'N',
+    color: '#ff5c6c',
+    slotKind: 'backpack',
+    active: { kind: 'tacticalNuke', amount: damage, apCost: 2 },
+  };
+}

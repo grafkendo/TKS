@@ -18,6 +18,7 @@ import {
   makeRangeModule,
   makeRepairKit,
   makeMine,
+  makeTacticalNuke,
 } from './factory';
 
 export interface RollOptions {
@@ -39,7 +40,11 @@ const HAND_ROLLERS: Roller[] = [
   () => makeWeapon(3, 'Heavy Cannon'),
 ];
 
-/** Roll table for backpack items. */
+/**
+ * Roll table for backpack items. The tactical nuke appears once so it
+ * lands at the same per-roll rate as every other entry — rare but
+ * occasionally world-changing.
+ */
 const BACKPACK_ROLLERS: Roller[] = [
   () => makeArmor(1, 'Light Plating'),
   () => makeArmor(2, 'Heavy Plating'),
@@ -49,6 +54,7 @@ const BACKPACK_ROLLERS: Roller[] = [
   () => makeRepairKit(3, 'Field Surgeon Kit'),
   () => makeMine(2),
   () => makeMine(3, 'Heavy Mine'),
+  () => makeTacticalNuke(3),
 ];
 
 export function rollItem(opts: RollOptions): Item | null {

@@ -171,3 +171,54 @@ describe('weighted Dijkstra (costToEnter)', () => {
     expect(cost).toBe(3);
   });
 });
+
+describe('canStop (ally pass-through)', () => {
+  it('excludes ally hexes from reachable but still routes past them', () => {
+    // An ally sits on (0, -1). It blocks landing but not passage.
+    const allyKey = hexKey({ q: 0, r: -1 });
+    const pf = new Pathfinder({
+      inBounds: (h) => isInsideHexRadius(h, 3),
+      isBlocked: () => false,
+      canStop: (h) => hexKey(h) !== allyKey,
+    });
+
+    const r = pf.reachable({ q: 0, r: 0 }, 2);
+    // Ally's hex is NOT a valid landing — but the hex one step beyond
+    // it (on the same line, (0, -2)) should still be reachable.
+    expect(r.has('0_-1')).toBe(false);
+    expect(r.has('0_-2')).toBe(true);
+    // Other neighbors unaffected.
+    expect(r.has('1_-1')).toBe(true);
+  });
+
+  it('findPath refuses to end on a canStop=false hex', () => {
+    const allyKey = hexKey({ q: 0, r: -1 });
+    const pf = new Pathfinder({
+      inBounds: (h) => isInsideHexRadius(h, 3),
+      isBlocked: () => false,
+      canStop: (h) => hexKey(h) !== allyKey,
+    });
+
+    expect(pf.findPath({ q: 0, r: 0 }, { q: 0, r: -1 }, 5)).toBeNull();
+    // But it still routes to a tile BEHIND the ally.
+    const path = pf.findPath({ q: 0, r: 0 }, { q: 0, r: -2 }, 5);
+    expect(path).not.toBeNull();
+    expect(path!.length).toBe(2);
+  });
+
+  it('isBlocked still rejects passage entirely (canStop is secondary)', () => {
+    // Wall completely blocks (0, -1).
+    const wallKey = hexKey({ q: 0, r: -1 });
+    const pf = new Pathfinder({
+      inBounds: (h) => isInsideHexRadius(h, 3),
+      isBlocked: (h) => hexKey(h) === wallKey,
+      canStop: () => true,
+    });
+
+    const r = pf.reachable({ q: 0, r: 0 }, 1);
+    expect(r.has('0_-1')).toBe(false);
+    // (0, -2) is only reachable by going around the wall, but radius 1
+    // budget can't fit the 2-hex detour.
+    expect(r.has('0_-2')).toBe(false);
+  });
+});
