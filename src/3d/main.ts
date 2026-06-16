@@ -107,11 +107,17 @@ import {
 } from './hex/HexCoord';
 import { hexLineBetween } from './hex/HexLine';
 
-import { buildUrbanMap } from './maps/urban';
+import { buildMapFromUrl } from './maps';
 import { createTerrainFromSpec } from './terrain/factory';
 import { Rubble } from './terrain/Rubble';
 import type { TerrainPiece } from './terrain/types';
 import { evaluateOutcome, type GameOutcome } from './rules/winCondition';
+import {
+  apBonusFromKills,
+  killsUntilNextMilestone,
+  TECH_MODIFIER_SOURCE,
+  TECH_POINTS_PER_KILL,
+} from './rules/techProgress';
 import type { Item } from './items/types';
 import {
   createEmptyInventory,
@@ -145,6 +151,7 @@ import {
   type MovementMode,
 } from './enemies/archetypes';
 import { createSpawnMesh, createSpawnFlash, type SpawnMeshHandle } from './spawn/SpawnPoint';
+import { createObjectiveMesh, type ObjectiveMeshHandle } from './objects/Objective';
 
 // ----- Tunables ------------------------------------------------------------
 
@@ -212,7 +219,9 @@ stage.setCamera(isoCam.camera);
 
 // ----- Load the composed map -----------------------------------------------
 
-const { map, spawns: SPAWN } = buildUrbanMap();
+const mapConfig = buildMapFromUrl();
+const { map, spawns: SPAWN } = mapConfig;
+isoCam.setZoom(mapConfig.cameraZoom);
 
 const board = new Board(map.tiles());
 stage.scene.add(board.root);
@@ -593,21 +602,10 @@ function attachArchetypeInsignia(mechRoot: THREE.Object3D, arch: EnemyArchetype)
 }
 
 /**
- * Initial crate spawn positions. Hexes chosen to be empty (no
- * buildings/walls/mech spawns) and spread across the map so both teams
- * have a reason to detour to grab supplies.
+ * Initial crate spawn positions — provided by the active map builder.
  */
-const INITIAL_CRATE_TILES: HexCoord[] = [
-  { q:  0, r: -1 },
-  { q:  0, r:  1 },
-  { q: -3, r:  1 },
-  { q:  3, r: -1 },
-  { q: -3, r:  3 },
-  { q:  3, r: -3 },
-];
-
 function spawnInitialCrates(): void {
-  for (const tile of INITIAL_CRATE_TILES) {
+  for (const tile of mapConfig.crateTiles) {
     if (!map.hasTile(tile)) continue;
     if (blockingTerrainAt(tile)) continue;
     spawnCrate(tile);
@@ -635,14 +633,8 @@ const activeSpawnFlashes: Array<ReturnType<typeof createSpawnFlash>> = [];
  */
 const MAX_TEAM2_ALIVE = 8;
 
-const INITIAL_SPAWN_POINT_TILES: HexCoord[] = [
-  { q:  2, r: -3 },
-  { q:  3, r: -2 },
-  { q: -1, r: -1 },
-];
-
 function spawnInitialSpawnPoints(): void {
-  for (const tile of INITIAL_SPAWN_POINT_TILES) {
+  for (const tile of mapConfig.spawnPointTiles) {
     if (!map.hasTile(tile)) continue;
     if (blockingTerrainAt(tile)) continue;
     placeSpawnPoint(tile);
@@ -660,11 +652,131 @@ function placeSpawnPoint(tile: HexCoord): SpawnPointEntity {
   return sp;
 }
 
+// ----- Capture objectives ---------------------------------------------------
+
+interface ObjectiveEntity {
+  id: string;
+  tile: HexCoord;
+  /** null = neutral; otherwise the team that currently holds the point. */
+  ownerTeam: 1 | 2 | null;
+  mesh: ObjectiveMeshHandle;
+}
+
+const objectives: ObjectiveEntity[] = [];
+let _objectiveSeq = 0;
+
+function objectiveAt(h: HexCoord): ObjectiveEntity | undefined {
+  return objectives.find((o) => hexEquals(o.tile, h));
+}
+
+function placeObjective(tile: HexCoord): ObjectiveEntity {
+  const mesh = createObjectiveMesh();
+  const p = board.tileToWorld(tile);
+  mesh.group.position.set(p.x, TILE_TOP_Y, p.z);
+  stage.scene.add(mesh.group);
+  const id = `obj-${++_objectiveSeq}`;
+  const obj: ObjectiveEntity = { id, tile, ownerTeam: null, mesh };
+  objectives.push(obj);
+  return obj;
+}
+
+function spawnInitialObjectives(): void {
+  for (const tile of mapConfig.objectiveTiles) {
+    if (!map.hasTile(tile)) continue;
+    if (blockingTerrainAt(tile)) continue;
+    placeObjective(tile);
+  }
+}
+
 /**
- * Remove an orbital drop point from play. Cleans up the mesh, frees
- * GPU resources, and drops it from the active list so future
- * `tickSpawnPoints` calls skip it forever. Idempotent.
+ * Claim a neutral objective or flip an enemy-held one when a mech ends
+ * movement on its hex.
  */
+function tryCaptureObjective(unit: Unit): void {
+  const obj = objectiveAt(unit.tile);
+  if (!obj || unit.destroyed) return;
+  if (obj.ownerTeam === unit.team) return;
+
+  const wasNeutral = obj.ownerTeam === null;
+  const prevOwner = obj.ownerTeam;
+  obj.ownerTeam = unit.team;
+  obj.mesh.setOwner(unit.team);
+
+  if (wasNeutral) {
+    setStatus(
+      `${describeUnit(unit)} captured objective at (${obj.tile.q},${obj.tile.r}).`,
+    );
+  } else {
+    setStatus(
+      `${describeUnit(unit)} seized objective from ${teamName(prevOwner!)} ` +
+      `at (${obj.tile.q},${obj.tile.r}).`,
+    );
+  }
+  renderTurnInfo();
+}
+
+function objectivesCapturedBy(team: 1 | 2): number {
+  return objectives.filter((o) => o.ownerTeam === team).length;
+}
+
+// Pulse objective beacons.
+stage.addTicker((_dt, total) => {
+  for (const obj of objectives) obj.mesh.tick(total);
+});
+
+// ----- Tech progress (player kills → bonus AP) ------------------------------
+
+/** Confirmed enemy kills credited to the red (player) team this match. */
+let playerKillCount = 0;
+
+function applyTechApBonus(bonus: number): void {
+  for (const u of units) {
+    if (u.team !== 1 || u.destroyed) continue;
+    u.maxAp.removeModifier(TECH_MODIFIER_SOURCE);
+    if (bonus > 0) {
+      u.maxAp.addModifier({
+        source: TECH_MODIFIER_SOURCE,
+        delta: bonus,
+        label: `Tech +${bonus} AP`,
+      });
+    }
+    if (u.ap > u.maxAp.effective) u.ap = u.maxAp.effective;
+  }
+}
+
+/**
+ * Register a kill scored by a red-team mech. Awards tech points and may
+ * unlock +1 max AP at 3 and 5 kills (stacking to +2).
+ * Returns a short suffix for the combat status line.
+ */
+function registerPlayerKill(killer: Unit | undefined): string {
+  if (!killer || killer.team !== 1) return '';
+
+  const prevBonus = apBonusFromKills(playerKillCount);
+  playerKillCount += 1;
+  const newBonus = apBonusFromKills(playerKillCount);
+  applyTechApBonus(newBonus);
+
+  const gained = newBonus - prevBonus;
+  if (gained > 0 && currentTeam === 1) {
+    for (const u of units) {
+      if (u.team === 1 && !u.destroyed) {
+        u.ap = Math.min(u.ap + gained, u.maxAp.effective);
+      }
+    }
+  }
+
+  renderTurnInfo();
+  renderDashboard();
+
+  const techPts = playerKillCount * TECH_POINTS_PER_KILL;
+  const parts: string[] = [`Tech ${techPts}`];
+  if (gained > 0) parts.push(`+${gained} max AP unlocked`);
+  const next = killsUntilNextMilestone(playerKillCount);
+  if (next !== null) parts.push(`${next - playerKillCount} kills to next bonus`);
+  return ` (${parts.join(' · ')})`;
+}
+
 function despawnSpawnPoint(sp: SpawnPointEntity): void {
   const idx = spawnPoints.indexOf(sp);
   if (idx < 0) return;
@@ -802,11 +914,16 @@ stage.addTicker((dt) => {
 
   spawnInitialCrates();
   spawnInitialSpawnPoints();
+  spawnInitialObjectives();
 
   renderTurnInfo();
   renderDashboard();
+  const objHint = mapConfig.objectiveTiles.length > 0
+    ? ' Capture objective boxes in the city. Kills earn tech — +1 AP at 3 and 5 kills.'
+    : '';
   setStatus(
-    "Red team's turn. Each mech carries a demo charge — use it on an orbital drop pad.",
+    `${mapConfig.displayName}: Red team's turn. Each mech carries a demo charge.` +
+    objHint,
   );
 })();
 
@@ -909,7 +1026,23 @@ function teamName(team: 1 | 2): string {
 function renderTurnInfo(): void {
   const color = currentTeam === 1 ? '#ff7a7a' : '#7aa8ff';
   const tag = teamControllers[currentTeam] === 'ai' ? ' <span style="color:#ffce4d;font-size:11px">[AI]</span>' : '';
-  turnInfoEl.innerHTML = `Turn ${turnNumber} — <span style="color:${color};font-weight:600">${teamName(currentTeam)} team</span>${tag}`;
+  const techPts = playerKillCount * TECH_POINTS_PER_KILL;
+  const apBonus = apBonusFromKills(playerKillCount);
+  const next = killsUntilNextMilestone(playerKillCount);
+  const techLine = apBonus > 0 || next !== null
+    ? `<br><span style="font-size:11px;color:#b8c4d0">` +
+      `Tech ${techPts} · AP bonus +${apBonus}` +
+      (next !== null ? ` · next +1 AP at ${next} kills` : ' · max tech') +
+      `</span>`
+    : '';
+  const objLine = objectives.length > 0
+    ? `<br><span style="font-size:11px;color:#b8c4d0">` +
+      `Objectives ${objectivesCapturedBy(1)}/${objectives.length} held` +
+      `</span>`
+    : '';
+  turnInfoEl.innerHTML =
+    `Turn ${turnNumber} — <span style="color:${color};font-weight:600">` +
+    `${teamName(currentTeam)} team</span>${tag}${techLine}${objLine}`;
 }
 
 // ----- Win condition -------------------------------------------------------
@@ -1488,6 +1621,8 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
     // to spend the AP and whether to risk a slot-full waste.
     const killedByMine = triggerMineFor(unit);
     if (killedByMine) break;
+
+    tryCaptureObjective(unit);
   }
 
   unit.mech.playAnimation('idle');
@@ -2069,6 +2204,9 @@ async function fireTacticalNuke(target: HexCoord): Promise<void> {
 
       if (target.hp <= 0) {
         target.destroyed = true;
+        const techMsg = (target.team === 2 && unit.team === 1)
+          ? registerPlayerKill(unit)
+          : '';
         const torso = target.mech.getAttachPoint('torso');
         if (torso) {
           const w = new THREE.Vector3();
@@ -2077,7 +2215,7 @@ async function fireTacticalNuke(target: HexCoord): Promise<void> {
         }
         target.mech.playAnimation('destroyed');
         sinkUnitWreckage(target);
-        hitLog.push(`destroyed ${describeUnit(target)}`);
+        hitLog.push(`destroyed ${describeUnit(target)}${techMsg}`);
       } else {
         hitLog.push(`${describeUnit(target)} -${before - target.hp} HP`);
       }
@@ -2220,9 +2358,12 @@ async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
     );
   } else if (target.hp <= 0) {
     target.destroyed = true;
+    const techMsg = target.team === 2 ? registerPlayerKill(shooter) : '';
     if (torsoTgt) fx.explosion({ position: targetWorld, scale: 1.4 });
     target.mech.playAnimation('destroyed');
-    setStatus(`${describeUnit(target)} destroyed by ${describeUnit(shooter)}${modStr}.`);
+    setStatus(
+      `${describeUnit(target)} destroyed by ${describeUnit(shooter)}${modStr}.${techMsg}`,
+    );
     sinkUnitWreckage(target);
   } else {
     setStatus(

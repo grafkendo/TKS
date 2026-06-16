@@ -16,7 +16,7 @@
 import type * as THREE from 'three';
 import type { HexCoord } from '../hex/HexCoord';
 
-export type TerrainKind = 'building' | 'platform' | 'wall' | 'rubble';
+export type TerrainKind = 'building' | 'platform' | 'wall' | 'solidWall' | 'rubble';
 
 /** Visual style flag — only used for buildings right now. */
 export type BuildingStyle = 'concrete' | 'glass' | 'brick';
@@ -51,6 +51,12 @@ export type ChunkTerrainSpec =
       /** Default ≈ 0.6 if unset. */
       height?: number;
       hp: number;
+    }
+  | {
+      kind: 'solidWall';
+      hex: HexCoord;
+      /** Default ≈ 1.35 if unset — indestructible perimeter. */
+      height?: number;
     }
   | {
       kind: 'rubble';

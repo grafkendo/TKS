@@ -145,3 +145,33 @@ export function isInsideHexRadius(h: HexCoord, radius: number): boolean {
     Math.abs(s)   <= radius
   );
 }
+
+/**
+ * Enumerate every hex in an axis-aligned axial rectangle (inclusive bounds).
+ * On a flat-top grid this reads as a wide rectangle on screen.
+ */
+export function hexesInRectangle(
+  qMin: number,
+  qMax: number,
+  rMin: number,
+  rMax: number,
+): HexCoord[] {
+  const out: HexCoord[] = [];
+  for (let q = qMin; q <= qMax; q++) {
+    for (let r = rMin; r <= rMax; r++) {
+      out.push({ q, r });
+    }
+  }
+  return out;
+}
+
+/** True if `h` lies on the outer edge of an axial rectangle. */
+export function isRectPerimeter(
+  h: HexCoord,
+  qMin: number,
+  qMax: number,
+  rMin: number,
+  rMax: number,
+): boolean {
+  return h.q === qMin || h.q === qMax || h.r === rMin || h.r === rMax;
+}

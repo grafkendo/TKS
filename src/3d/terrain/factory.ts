@@ -9,6 +9,7 @@ import { Building } from './Building';
 import { Platform } from './Platform';
 import { Rubble } from './Rubble';
 import { Wall } from './Wall';
+import { SolidWall } from './SolidWall';
 import type { ChunkTerrainSpec, TerrainPiece } from './types';
 import type { HexCoord } from '../hex/HexCoord';
 
@@ -43,6 +44,12 @@ export function createTerrainFromSpec(
         tile: worldHex,
         height: spec.height,
         hp: spec.hp,
+      });
+    case 'solidWall':
+      return new SolidWall({
+        id,
+        tile: worldHex,
+        height: spec.height,
       });
     case 'rubble':
       return new Rubble({

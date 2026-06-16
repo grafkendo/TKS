@@ -14,6 +14,7 @@
 import { HexChunkTemplate, HexMap } from './HexMap';
 import { HexCoord, hexesInRadius } from '../hex/HexCoord';
 import type { BuildingStyle } from '../terrain/types';
+import type { MapBuildResult } from './types';
 
 // ----- Tunables -------------------------------------------------------------
 
@@ -92,22 +93,12 @@ const cityCorner: HexChunkTemplate = {
 
 // ----- Map composition ------------------------------------------------------
 
-export interface UrbanMapResult {
-  map: HexMap;
-  spawns: {
-    r1: HexCoord;
-    r2: HexCoord;
-    b1: HexCoord;
-    b2: HexCoord;
-  };
-}
+export interface UrbanMapResult extends MapBuildResult {}
 
 /**
- * Compose the urban map. Returns the HexMap plus the chosen spawn coords
- * (so main.ts doesn't need to hardcode them and tweaking the map can't
- * desync the spawns).
+ * Compose the urban map. Returns the HexMap plus spawn / item positions.
  */
-export function buildUrbanMap(): UrbanMapResult {
+export function buildUrbanMap(): MapBuildResult {
   const m = new HexMap();
 
   // Base layer: every hex in a radius-3 disk gets an empty street tile.
@@ -143,5 +134,24 @@ export function buildUrbanMap(): UrbanMapResult {
     b2: { q: -1, r: -2 },
   };
 
-  return { map: m, spawns };
+  return {
+    map: m,
+    spawns,
+    crateTiles: [
+      { q: 0, r: -1 },
+      { q: 0, r: 1 },
+      { q: -3, r: 1 },
+      { q: 3, r: -1 },
+      { q: -3, r: 3 },
+      { q: 3, r: -3 },
+    ],
+    spawnPointTiles: [
+      { q: 2, r: -3 },
+      { q: 3, r: -2 },
+      { q: -1, r: -1 },
+    ],
+    objectiveTiles: [],
+    cameraZoom: 8,
+    displayName: 'Urban',
+  };
 }
