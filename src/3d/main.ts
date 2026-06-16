@@ -223,6 +223,10 @@ const mapConfig = buildMapFromUrl();
 const { map, spawns: SPAWN } = mapConfig;
 isoCam.setZoom(mapConfig.cameraZoom);
 
+/** Zoom level when framing a selected player mech (closer than map default). */
+const SELECT_FOCUS_ZOOM_FACTOR = 0.58;
+const CAMERA_OVERVIEW_TARGET = new THREE.Vector3(0, 0.5, 0);
+
 const board = new Board(map.tiles());
 stage.scene.add(board.root);
 
@@ -903,12 +907,11 @@ stage.addTicker((dt) => {
   await placeMech({ id: 'b1', team: 2, tile: SPAWN.b1, facingDeg: 90,  archetype: ARCHETYPES.grunt });
   await placeMech({ id: 'b2', team: 2, tile: SPAWN.b2, facingDeg: 90,  archetype: ARCHETYPES.grunt });
 
-  // Each player mech starts the game with one free demo charge so the
-  // first orbital drop point is always within tactical reach.
+  // Each player mech starts with a tactical nuke and one repair kit.
   for (const u of units) {
     if (u.team === 1 && u.archetypeKey === 'elite') {
-      const charge = makeDemoCharge();
-      addItem(u.inventory, charge); // never fails: empty backpack guaranteed
+      addItem(u.inventory, makeTacticalNuke());
+      addItem(u.inventory, makeRepairKit(2));
     }
   }
 
@@ -922,7 +925,7 @@ stage.addTicker((dt) => {
     ? ' Capture objective boxes in the city. Kills earn tech — +1 AP at 3 and 5 kills.'
     : '';
   setStatus(
-    `${mapConfig.displayName}: Red team's turn. Each mech carries a demo charge.` +
+    `${mapConfig.displayName}: Red team's turn. Each mech carries a nuke and repair kit.` +
     objHint,
   );
 })();
@@ -1289,7 +1292,24 @@ function selectUnit(unit: Unit): void {
   recomputeReachable(unit);
   refreshTileVisuals(null);
   renderDashboard();
+  if (unit.team === 1 && teamControllers[1] === 'human') {
+    focusCameraOnUnit(unit);
+  }
   setStatus(describeSelection(unit));
+}
+
+/** Smoothly pan and zoom the camera toward a mech's hex. */
+function focusCameraOnUnit(unit: Unit): void {
+  const p = board.tileToWorld(unit.tile);
+  const elev = elevationAt(unit.tile);
+  isoCam.setTarget(new THREE.Vector3(p.x, TILE_TOP_Y + elev + 0.9, p.z));
+  isoCam.setZoom(mapConfig.cameraZoom * SELECT_FOCUS_ZOOM_FACTOR);
+}
+
+/** Pull back to the map overview after deselecting. */
+function restoreCameraOverview(): void {
+  isoCam.setTarget(CAMERA_OVERVIEW_TARGET);
+  isoCam.setZoom(mapConfig.cameraZoom);
 }
 
 function describeSelection(unit: Unit): string {
@@ -1319,6 +1339,7 @@ function deselect(): void {
   mode = 'idle';
   reachableForSelected = new Map();
   board.clearAllStates();
+  restoreCameraOverview();
   renderDashboard();
 }
 
