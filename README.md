@@ -108,6 +108,8 @@ npm run test:watch        # Re-run tests on save
 ```powershell
 npm run build:local       # First, build the static client
 npm run server            # Then serve it on http://0.0.0.0:8080
+npm run share             # Build + serve + public tunnel for a remote friend
+npm run share:lan         # Same, but LAN URLs only (no tunnel)
 ```
 
 See **[SELF_HOSTING.md](./SELF_HOSTING.md)** for full deploy options (LAN, VPS, Docker).

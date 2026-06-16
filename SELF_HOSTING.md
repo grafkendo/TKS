@@ -4,6 +4,42 @@ Three escalating options, from "just open the file" to "production deploy".
 
 ---
 
+## Quick share with a friend (no cloud)
+
+One command builds the game, starts a local server, and (by default) opens a **free public tunnel** so a remote friend can open it in their browser. No Google Cloud, no ngrok account.
+
+```powershell
+cd tackticus
+npm install
+npm run share
+```
+
+Leave the terminal open. You'll see:
+
+- **localhost** — for you on this PC
+- **LAN** (`http://192.168.x.x:8080/...`) — friend on the same Wi‑Fi
+- **Internet** (`https://….loca.lt/...`) — send this to a remote friend
+
+Direct link to the 3D demo: append `/3d/index.html` to any of those URLs.
+
+**LAN only** (no public tunnel):
+
+```powershell
+npm run share:lan
+```
+
+**Port already in use?**
+
+```powershell
+$env:PORT='8081'; npm run share
+```
+
+Each person plays their **own solo game** (vs AI). Playing the same match together online is not wired yet.
+
+The tunnel may show a one-time “Click to continue” page — your friend clicks through, then the game loads.
+
+---
+
 ## Option 1 — Pure static (no server)
 
 The local hot-seat client doesn't need a backend at all. Both players share one screen.
@@ -56,35 +92,50 @@ npm run server
 
 ---
 
-## Option 3 — Docker / VPS deploy
+## Option 3 — Docker / Cloud Run / VPS deploy
 
-For a "real" deploy on a VPS, Raspberry Pi, or homelab:
+The repo includes a **`Dockerfile`** at the project root (Node 20 — **not** PHP/Apache). Use it for Cloud Run, any Docker host, or a VPS.
 
-### Minimal Dockerfile
-
-Create `Dockerfile` in the project root:
-
-```dockerfile
-FROM node:20-alpine
-
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-
-COPY . .
-RUN npm run build:local
-
-EXPOSE 8080
-ENV HOST=0.0.0.0
-ENV PORT=8080
-CMD ["node", "server/index.mjs"]
-```
-
-Build and run:
+### Build and run locally
 
 ```bash
 docker build -t tackticus .
 docker run -d -p 8080:8080 --name tackticus tackticus
+```
+
+Open `http://localhost:8080/3d/index.html`.
+
+### Google Cloud Run
+
+From the project root (with [gcloud](https://cloud.google.com/sdk) installed and a project selected):
+
+```bash
+gcloud run deploy tackticus \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --session-affinity
+```
+
+- Cloud Run injects `PORT` automatically — the server already reads it.
+- **`--session-affinity`** keeps WebSocket room state on one instance (rooms are in memory).
+- Enable **WebSocket** on the service if you use `/ws` later.
+
+**Do not use** PHP/Apache/MySQL templates from Cloud Assist — this project has no database and no PHP runtime for self-host.
+
+### Dockerfile (already in repo)
+
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build:local
+ENV HOST=0.0.0.0
+ENV PORT=8080
+EXPOSE 8080
+CMD ["node", "server/index.mjs"]
 ```
 
 ### Behind a reverse proxy (nginx / Caddy)

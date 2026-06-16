@@ -13,6 +13,8 @@
     "build:bga": "npm run build:bga:ts && npm run build:bga:scss",
     "watch:bga": "npm-run-all --parallel \"build:bga:ts -- -w\" \"build:bga:scss -- --watch\"",
     "server": "node server/index.mjs",
+    "share": "node scripts/share.mjs",
+    "share:lan": "node scripts/share.mjs --lan-only",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -26,6 +28,7 @@
     "sass": "^1.78.0",
     "tslib": "^2.7.0",
     "typescript": "^5.5.4",
+    "localtunnel": "^2.0.2",
     "vite": "^5.4.2",
     "vitest": "^2.0.5"
   },

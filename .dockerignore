@@ -1,0 +1,20 @@
+# Dependencies and build output (rebuilt inside the image)
+node_modules
+dist
+
+# Git and editor noise
+.git
+.gitignore
+.cursor
+.vscode
+
+# Local share / dev artifacts
+.git/COMMIT_MSG.tmp
+
+# Tests — not needed in the production image
+**/*.test.ts
+
+# Docs are optional in the image; keep the image smaller
+DESIGN.md
+README.md
+SELF_HOSTING.md
