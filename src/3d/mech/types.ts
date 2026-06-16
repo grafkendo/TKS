@@ -127,3 +127,11 @@ export const CHASSIS_MOVEMENT_SOURCE = 'chassis';
  * `ATTACK_RANGE_BASE` is the spawn-time base value; tweak per game mode.
  */
 export const ATTACK_RANGE_BASE = 2;
+
+/**
+ * Procedural mechs are modeled facing +Z at rotation 0. Game logic uses
+ * 0° = +X (east), 90° = +Z (south). Convert before writing rotation.y.
+ */
+export function gameFacingToModelYaw(gameDeg: number): number {
+  return ((90 - gameDeg) % 360 + 360) % 360;
+}

@@ -103,9 +103,16 @@ import {
   hexDistance,
   hexEquals,
   hexFacingDegrees,
+  hexFromKey,
   hexKey,
+  hexNeighbor,
 } from './hex/HexCoord';
 import { hexLineBetween } from './hex/HexLine';
+import {
+  hexesInForwardCone,
+  isInForwardArc,
+  facingDegToDirIndex,
+} from './hex/hexFacing';
 
 import { buildMapFromUrl } from './maps';
 import { createTerrainFromSpec } from './terrain/factory';
@@ -115,8 +122,8 @@ import { evaluateOutcome, type GameOutcome } from './rules/winCondition';
 import {
   apBonusFromKills,
   killsUntilNextMilestone,
-  TECH_MODIFIER_SOURCE,
   TECH_POINTS_PER_KILL,
+  techModifierSource,
 } from './rules/techProgress';
 import type { Item } from './items/types';
 import {
@@ -152,6 +159,16 @@ import {
 } from './enemies/archetypes';
 import { createSpawnMesh, createSpawnFlash, type SpawnMeshHandle } from './spawn/SpawnPoint';
 import { createObjectiveMesh, type ObjectiveMeshHandle } from './objects/Objective';
+import {
+  parseCoopParams,
+  initCoopSession,
+  isCoopActive,
+  canControlUnit,
+  sendCoopAction,
+  coopServerState,
+  coopPlayerId,
+} from './coop/coopSession';
+import type { CoopGameState } from './coop/types';
 
 // ----- Tunables ------------------------------------------------------------
 
@@ -179,6 +196,37 @@ const hudToggleBtn = document.getElementById('hud-toggle') as HTMLButtonElement;
 const hudBodyEl = document.getElementById('hud-body') as HTMLDivElement;
 const moveCostLayerEl = document.getElementById('move-cost-layer') as HTMLDivElement;
 const showMoveCostCheckbox = document.getElementById('setting-show-move-cost') as HTMLInputElement;
+
+const pivotControlsEl = document.createElement('div');
+pivotControlsEl.className = 'pivot-controls';
+pivotControlsEl.hidden = true;
+const pivotLeftBtn = document.createElement('button');
+pivotLeftBtn.type = 'button';
+pivotLeftBtn.className = 'pivot-btn';
+pivotLeftBtn.textContent = '↺';
+pivotLeftBtn.title = 'Turn left';
+const pivotRightBtn = document.createElement('button');
+pivotRightBtn.type = 'button';
+pivotRightBtn.className = 'pivot-btn';
+pivotRightBtn.textContent = '↻';
+pivotRightBtn.title = 'Turn right';
+const pivotCostEl = document.createElement('span');
+pivotCostEl.className = 'pivot-cost';
+pivotControlsEl.append(pivotLeftBtn, pivotCostEl, pivotRightBtn);
+moveCostLayerEl.appendChild(pivotControlsEl);
+
+pivotLeftBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!selectedId) return;
+  const u = units.find((x) => x.id === selectedId);
+  if (u) doTurnUnit(u, 'right');
+});
+pivotRightBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!selectedId) return;
+  const u = units.find((x) => x.id === selectedId);
+  if (u) doTurnUnit(u, 'left');
+});
 
 /**
  * Persisted user preferences. Each entry maps directly to a checkbox in
@@ -440,8 +488,14 @@ interface Unit {
   ap: number;
   hp: number;
 
+  /** Enemy kills credited to this mech for per-unit tech progression. */
+  techKills: number;
+
   /** 6-slot grid: 2 hands + 4 backpack. See ./items/inventory.ts. */
   inventory: Inventory;
+
+  /** Co-op: human player id that owns this mech (team 1 only). */
+  ownerId?: string | null;
 }
 
 const units: Unit[] = [];
@@ -564,6 +618,7 @@ async function placeMech(spec: {
     movementRange: archetype.movementRange,
     ap: maxAp.effective,
     hp: maxHp.effective,
+    techKills: 0,
     inventory: createEmptyInventory(),
   };
   units.push(unit);
@@ -728,56 +783,56 @@ stage.addTicker((_dt, total) => {
   for (const obj of objectives) obj.mesh.tick(total);
 });
 
-// ----- Tech progress (player kills → bonus AP) ------------------------------
+// ----- Tech progress (per-mech kills → bonus AP) ---------------------------
 
-/** Confirmed enemy kills credited to the red (player) team this match. */
-let playerKillCount = 0;
-
-function applyTechApBonus(bonus: number): void {
-  for (const u of units) {
-    if (u.team !== 1 || u.destroyed) continue;
-    u.maxAp.removeModifier(TECH_MODIFIER_SOURCE);
-    if (bonus > 0) {
-      u.maxAp.addModifier({
-        source: TECH_MODIFIER_SOURCE,
-        delta: bonus,
-        label: `Tech +${bonus} AP`,
-      });
-    }
-    if (u.ap > u.maxAp.effective) u.ap = u.maxAp.effective;
+function applyTechApBonusForUnit(unit: Unit): void {
+  if (unit.team !== 1 || unit.destroyed) return;
+  const bonus = apBonusFromKills(unit.techKills);
+  const source = techModifierSource(unit.id);
+  unit.maxAp.removeModifier(source);
+  if (bonus > 0) {
+    unit.maxAp.addModifier({
+      source,
+      delta: bonus,
+      label: `Tech +${bonus} AP`,
+    });
   }
+  if (unit.ap > unit.maxAp.effective) unit.ap = unit.maxAp.effective;
+}
+
+function techStatusSuffix(unit: Unit): string {
+  const techPts = unit.techKills * TECH_POINTS_PER_KILL;
+  const apBonus = apBonusFromKills(unit.techKills);
+  const next = killsUntilNextMilestone(unit.techKills);
+  const parts = [`Tech ${techPts}`, `+${apBonus} AP`];
+  if (next !== null) parts.push(`${next - unit.techKills} kills to next bonus`);
+  return parts.join(' · ');
 }
 
 /**
- * Register a kill scored by a red-team mech. Awards tech points and may
- * unlock +1 max AP at 3 and 5 kills (stacking to +2).
+ * Register a kill scored by a red-team mech. Awards tech to that mech only.
  * Returns a short suffix for the combat status line.
  */
 function registerPlayerKill(killer: Unit | undefined): string {
   if (!killer || killer.team !== 1) return '';
 
-  const prevBonus = apBonusFromKills(playerKillCount);
-  playerKillCount += 1;
-  const newBonus = apBonusFromKills(playerKillCount);
-  applyTechApBonus(newBonus);
+  const prevBonus = apBonusFromKills(killer.techKills);
+  killer.techKills += 1;
+  applyTechApBonusForUnit(killer);
 
+  const newBonus = apBonusFromKills(killer.techKills);
   const gained = newBonus - prevBonus;
-  if (gained > 0 && currentTeam === 1) {
-    for (const u of units) {
-      if (u.team === 1 && !u.destroyed) {
-        u.ap = Math.min(u.ap + gained, u.maxAp.effective);
-      }
-    }
+  if (gained > 0 && currentTeam === 1 && killer.ap < killer.maxAp.effective) {
+    killer.ap = Math.min(killer.ap + gained, killer.maxAp.effective);
   }
 
   renderTurnInfo();
   renderDashboard();
 
-  const techPts = playerKillCount * TECH_POINTS_PER_KILL;
-  const parts: string[] = [`Tech ${techPts}`];
+  const parts: string[] = [`${killer.id.toUpperCase()} tech ${killer.techKills}`];
   if (gained > 0) parts.push(`+${gained} max AP unlocked`);
-  const next = killsUntilNextMilestone(playerKillCount);
-  if (next !== null) parts.push(`${next - playerKillCount} kills to next bonus`);
+  const next = killsUntilNextMilestone(killer.techKills);
+  if (next !== null) parts.push(`${next - killer.techKills} kills to next bonus`);
   return ` (${parts.join(' · ')})`;
 }
 
@@ -898,7 +953,107 @@ stage.addTicker((dt) => {
   }
 });
 
+// ----- Turn state (must be declared before boot IIFE) ----------------------
+
+let currentTeam: 1 | 2 = 1;
+let turnNumber = 1;
+
+/** Who's at the controls for each team. */
+type TeamController = 'human' | 'ai';
+const teamControllers: Record<1 | 2, TeamController> = { 1: 'human', 2: 'ai' };
+
+/** True while the AI is processing its turn. Locks player input. */
+let aiActive = false;
+
+const coopParams = parseCoopParams();
+
+async function syncFromCoopServer(state: CoopGameState): Promise<void> {
+  for (const su of state.units) {
+    let u = units.find((x) => x.id === su.id);
+    if (!u) {
+      const arch = su.team === 1 ? ELITE : ARCHETYPES.grunt;
+      u = await placeMech({
+        id: su.id,
+        team: su.team,
+        tile: su.tile,
+        facingDeg: su.facingDeg,
+        archetype: arch,
+        chassis: su.chassis,
+      });
+      u.ownerId = su.ownerId;
+      if (su.team === 1 && su.ownerId) {
+        addItem(u.inventory, makeTacticalNuke());
+        addItem(u.inventory, makeRepairKit(2));
+      }
+    }
+
+    u.ownerId = su.ownerId;
+    u.tile = { ...su.tile };
+    u.ap = su.ap;
+    u.hp = su.hp;
+    u.techKills = su.techKills;
+    u.facingDeg = su.facingDeg;
+    u.destroyed = su.destroyed;
+    u.maxAp.setBase(su.maxAp);
+    u.maxHp.setBase(su.maxHp);
+    u.damage.setBase(su.damage);
+    u.attackRange.setBase(su.attackRange);
+    applyTechApBonusForUnit(u);
+
+    const p = board.tileToWorld(su.tile);
+    u.mech.object.position.set(p.x, TILE_TOP_Y + elevationAt(su.tile), p.z);
+    u.mech.setFacing(su.facingDeg);
+    u.mech.object.visible = !su.destroyed;
+    if (su.destroyed) u.mech.playAnimation('destroyed');
+  }
+
+  currentTeam = state.phase === 'ai' ? 2 : 1;
+  turnNumber = state.turnNumber;
+  aiActive = state.phase === 'ai';
+
+  const myPhase =
+    state.phase === 'human' && state.activePlayerId === coopPlayerId();
+  endTurnBtn.disabled =
+    state.outcome.ended || (isCoopActive() && !myPhase);
+
+  if (state.outcome.ended) {
+    gameOver = state.outcome;
+    endTurnBtn.disabled = true;
+    renderGameOver();
+  }
+
+  renderTurnInfo();
+  renderDashboard();
+  if (selectedId) {
+    const sel = units.find((u) => u.id === selectedId);
+    if (sel && !sel.destroyed) recomputeReachable(sel);
+  }
+  refreshTileVisuals(null);
+
+  const active = state.players.find((p) => p.id === state.activePlayerId);
+  if (state.phase === 'human' && active) {
+    const mine = state.activePlayerId === coopPlayerId();
+    setStatus(
+      mine
+        ? `Your sub-phase — move your mechs, then End Turn.`
+        : `Waiting for ${active.name}…`,
+    );
+  } else if (state.phase === 'ai') {
+    setStatus('Enemy turn…');
+  }
+}
+
 (async () => {
+  if (coopParams) {
+    spawnInitialObjectives();
+    setStatus('Connecting to co-op room…');
+    initCoopSession(coopParams, {
+      setStatus,
+      applyServerState: syncFromCoopServer,
+    });
+    return;
+  }
+
   // Red team — elite player mechs (3 AP, per-hex movement).
   await placeMech({ id: 'r1', team: 1, tile: SPAWN.r1, facingDeg: 270, archetype: ELITE, chassis: 'light', weaponRight: 'beam' });
   await placeMech({ id: 'r2', team: 1, tile: SPAWN.r2, facingDeg: 270, archetype: ELITE, chassis: 'heavy', weaponRight: 'cannon', weaponLeft: 'missiles' });
@@ -930,18 +1085,6 @@ stage.addTicker((dt) => {
   );
 })();
 
-// ----- Turn state ----------------------------------------------------------
-
-let currentTeam: 1 | 2 = 1;
-let turnNumber = 1;
-
-/** Who's at the controls for each team. */
-type TeamController = 'human' | 'ai';
-const teamControllers: Record<1 | 2, TeamController> = { 1: 'human', 2: 'ai' };
-
-/** True while the AI is processing its turn. Locks player input. */
-let aiActive = false;
-
 function endTurn(): void {
   if (mode === 'animating') return;
   if (gameOver) return;
@@ -952,6 +1095,10 @@ function endTurn(): void {
 /** Internal — the actual turn-flip logic, callable by both UI + AI. */
 function doEndTurn(): void {
   if (gameOver) return;
+  if (isCoopActive()) {
+    sendCoopAction({ kind: 'endPhase' });
+    return;
+  }
   // Cancel any in-progress nuke targeting — you don't get to lob it
   // across turn boundaries.
   if (mode === 'nukeTargeting') {
@@ -1012,6 +1159,7 @@ function doEndTurn(): void {
  * the active team is computer-controlled.
  */
 async function runStartOfTurn(): Promise<void> {
+  if (isCoopActive()) return;
   if (currentTeam === 2) {
     await tickSpawnPoints();
     if (gameOver) return;
@@ -1029,14 +1177,17 @@ function teamName(team: 1 | 2): string {
 function renderTurnInfo(): void {
   const color = currentTeam === 1 ? '#ff7a7a' : '#7aa8ff';
   const tag = teamControllers[currentTeam] === 'ai' ? ' <span style="color:#ffce4d;font-size:11px">[AI]</span>' : '';
-  const techPts = playerKillCount * TECH_POINTS_PER_KILL;
-  const apBonus = apBonusFromKills(playerKillCount);
-  const next = killsUntilNextMilestone(playerKillCount);
-  const techLine = apBonus > 0 || next !== null
+  const coop = coopServerState();
+  const coopLine = coop && coop.phase !== 'lobby'
     ? `<br><span style="font-size:11px;color:#b8c4d0">` +
-      `Tech ${techPts} · AP bonus +${apBonus}` +
-      (next !== null ? ` · next +1 AP at ${next} kills` : ' · max tech') +
-      `</span>`
+      (coop.phase === 'human' && coop.activePlayerId
+        ? `Sub-phase: ${coop.players.find((p) => p.id === coop.activePlayerId)?.name ?? '—'}`
+        : coop.phase === 'ai' ? 'AI turn' : '') +
+      ` · Turn ${coop.turnNumber}</span>`
+    : '';
+  const sel = selectedId ? units.find((u) => u.id === selectedId) : undefined;
+  const techLine = sel && sel.team === 1 && !sel.destroyed
+    ? `<br><span style="font-size:11px;color:#b8c4d0">${sel.id.toUpperCase()}: ${techStatusSuffix(sel)}</span>`
     : '';
   const objLine = objectives.length > 0
     ? `<br><span style="font-size:11px;color:#b8c4d0">` +
@@ -1045,7 +1196,7 @@ function renderTurnInfo(): void {
     : '';
   turnInfoEl.innerHTML =
     `Turn ${turnNumber} — <span style="color:${color};font-weight:600">` +
-    `${teamName(currentTeam)} team</span>${tag}${techLine}${objLine}`;
+    `${teamName(currentTeam)} team</span>${tag}${coopLine}${techLine}${objLine}`;
 }
 
 // ----- Win condition -------------------------------------------------------
@@ -1172,6 +1323,41 @@ picker.setEvents({
     const target = units.find((u) => u.id === unitId);
     if (!target || target.destroyed) return;
 
+    if (isCoopActive()) {
+      if (selectedId === null) {
+        if (!canControlUnit(target.id)) {
+          setStatus('Not your mech or sub-phase.');
+          return;
+        }
+        selectUnit(target);
+        return;
+      }
+      if (selectedId === unitId) {
+        deselect();
+        return;
+      }
+      const shooter = units.find((u) => u.id === selectedId);
+      if (!shooter || shooter.destroyed) {
+        if (canControlUnit(target.id)) selectUnit(target);
+        return;
+      }
+      if (shooter.team === target.team) {
+        if (!canControlUnit(target.id)) {
+          setStatus('Not your mech or sub-phase.');
+          return;
+        }
+        selectUnit(target);
+        setStatus(`Switched selection to ${describeUnit(target)}.`);
+        return;
+      }
+      if (!canControlUnit(shooter.id)) {
+        setStatus('Not your sub-phase.');
+        return;
+      }
+      void fireAtUnit(shooter, target);
+      return;
+    }
+
     if (selectedId === null) {
       if (target.team !== currentTeam) {
         setStatus(`That's a ${teamName(target.team)} mech — it's ${teamName(currentTeam)}'s turn.`);
@@ -1287,6 +1473,10 @@ picker.setEvents({
 });
 
 function selectUnit(unit: Unit): void {
+  if (isCoopActive() && !canControlUnit(unit.id)) {
+    setStatus('Not your mech or sub-phase.');
+    return;
+  }
   selectedId = unit.id;
   mode = 'selected';
   recomputeReachable(unit);
@@ -1327,8 +1517,11 @@ function describeSelection(unit: Unit): string {
   if (crate && unit.ap >= CRATE_OPEN_AP_COST) {
     return head + `Click your tile (or the crate) to open it for 1 AP — beware traps.`;
   }
-  return head + (unit.ap > 0
-    ? `Green = move, red = fire.`
+  const arcHint = requiresForwardArc(unit)
+    ? `Heavy: fires forward arc only — pivot with , / . (1 AP). `
+    : '';
+  return head + arcHint + (unit.ap > 0
+    ? `Green = move, light green = fire arc, red = shoot.`
     : `Out of AP — end the turn.`);
 }
 
@@ -1349,12 +1542,26 @@ function recomputeReachable(unit: Unit): void {
     reachableForSelected = new Map([[hexKey(unit.tile), 0]]);
     return;
   }
-  // Burst units that have already spent their move action this turn
-  // (e.g. shot first) shouldn't show any reachable hexes — we can't
-  // detect "already moved" right now (no per-turn flag), so use AP as
-  // the gate: 0 AP = nothing reachable; otherwise the full burst range.
   const pf = makePathfinder(unit);
   reachableForSelected = pf.reachable(unit.tile, moveBudget(unit));
+}
+
+/** Heavy chassis mechs may only shoot within their forward 3-face arc. */
+function requiresForwardArc(unit: Unit): boolean {
+  return unit.chassis === 'heavy';
+}
+
+function canShootAtTile(shooter: Unit, targetTile: HexCoord): boolean {
+  const range = shooter.attackRange.effective;
+  if (hexDistance(shooter.tile, targetTile) > range) return false;
+  if (!requiresForwardArc(shooter)) return true;
+  return isInForwardArc(
+    shooter.tile,
+    targetTile,
+    shooter.facingDeg,
+    range,
+    (t) => board.has(t),
+  );
 }
 
 function refreshTileVisuals(hover: HexCoord | null): void {
@@ -1381,9 +1588,7 @@ function refreshTileVisuals(hover: HexCoord | null): void {
   // Green: reachable hexes (skipped entirely for immobilised mechs).
   if (sel && !sel.immobilised) {
     for (const k of reachableForSelected.keys()) {
-      const [qs, rs] = k.split('_');
-      const h: HexCoord = { q: parseInt(qs, 10), r: parseInt(rs, 10) };
-
+      const h = hexFromKey(k);
       if (hexEquals(sel.tile, h)) continue;
       if (unitAt(h)) continue;
       if (blockingTerrainAt(h)) continue;
@@ -1391,19 +1596,26 @@ function refreshTileVisuals(hover: HexCoord | null): void {
     }
   }
 
-  // Red: enemies + destructible terrain in attack range (only if the
-  // selected unit has AP AND isn't immobilised).
-  if (sel && !sel.immobilised && sel.ap >= AP_COST.shoot) {
+  // Lighter green: heavy mech forward fire cone (3 at range 1, 8 at range 2+).
+  if (sel && !sel.immobilised && requiresForwardArc(sel) && sel.ap >= AP_COST.shoot) {
     const range = sel.attackRange.effective;
+    for (const h of hexesInForwardCone(sel.tile, sel.facingDeg, range, (t) => board.has(t))) {
+      if (hexEquals(sel.tile, h)) continue;
+      board.setTileState(h, 'fireArc');
+    }
+  }
+
+  // Red: enemies + destructible terrain in range (and forward arc for heavy).
+  if (sel && !sel.immobilised && sel.ap >= AP_COST.shoot) {
     for (const target of units) {
       if (target.destroyed || target.team === sel.team) continue;
-      if (hexDistance(sel.tile, target.tile) <= range) {
+      if (canShootAtTile(sel, target.tile)) {
         board.setTileState(target.tile, 'attack');
       }
     }
     for (const t of terrainPieces) {
       if (t.destroyed || t.hp === undefined) continue;
-      if (hexDistance(sel.tile, t.tile) <= range) {
+      if (canShootAtTile(sel, t.tile)) {
         board.setTileState(t.tile, 'attack');
       }
     }
@@ -1416,10 +1628,9 @@ function refreshTileVisuals(hover: HexCoord | null): void {
 
 // ----- Move-cost overlay ---------------------------------------------------
 //
-// Renders small "1 AP" / "2 AP" badges over the six neighbors of the
-// currently selected mech so the player can read movement costs at a
-// glance. Lives in DOM (not WebGL) so badges stay crisp at any zoom.
-// Toggled via the settings checkbox inside the hamburger menu.
+// Renders semi-transparent AP badges on every reachable hex for the
+// selected mech (not just immediate neighbors). Lives in DOM so labels
+// stay crisp at any zoom. Toggled via the hamburger settings panel.
 
 const _projectVec = new THREE.Vector3();
 const moveCostLabels: HTMLDivElement[] = [];
@@ -1439,6 +1650,7 @@ function hideAllMoveCostLabels(): void {
   for (const el of moveCostLabels) {
     if (el) el.style.display = 'none';
   }
+  pivotControlsEl.hidden = true;
 }
 
 /**
@@ -1477,22 +1689,26 @@ function updateMoveCostOverlay(): void {
     return;
   }
 
-  for (let i = 0; i < HEX_DIRS.length; i++) {
-    const dir = HEX_DIRS[i];
-    const tile: HexCoord = { q: sel.tile.q + dir.q, r: sel.tile.r + dir.r };
-    const el = ensureMoveCostLabel(i);
+  for (let i = 0; i < reachableForSelected.size; i++) {
+    ensureMoveCostLabel(i);
+  }
+
+  let labelIdx = 0;
+  for (const [k, pathCost] of reachableForSelected) {
+    if (pathCost === 0) continue;
+    const tile = hexFromKey(k);
+    const el = ensureMoveCostLabel(labelIdx++);
 
     if (!board.has(tile) || blockingTerrainAt(tile) || unitAt(tile)) {
       el.style.display = 'none';
       continue;
     }
 
-    const cost = apCostToEnter(tile);
+    const cost = sel.movementMode === 'burst' ? 1 : pathCost;
     const world = board.tileToWorld(tile);
     _projectVec.set(world.x, world.y + 0.55, world.z);
     _projectVec.project(isoCam.camera);
 
-    // Clip if behind / outside the view frustum.
     if (_projectVec.z < -1 || _projectVec.z > 1) {
       el.style.display = 'none';
       continue;
@@ -1507,29 +1723,102 @@ function updateMoveCostOverlay(): void {
     el.style.top = `${y}px`;
     el.style.display = 'block';
   }
+
+  for (let i = labelIdx; i < moveCostLabels.length; i++) {
+    const el = moveCostLabels[i];
+    if (el) el.style.display = 'none';
+  }
+
+  updatePivotControls();
+}
+
+/** On-screen ↺ / ↻ buttons for heavy mech pivot (below selected unit). */
+function updatePivotControls(): void {
+  const hide =
+    !settings.showMoveCost ||
+    !selectedId ||
+    mode === 'nukeTargeting' ||
+    mode === 'animating' ||
+    aiActive ||
+    gameOver;
+
+  if (hide) {
+    pivotControlsEl.hidden = true;
+    return;
+  }
+
+  const sel = units.find((u) => u.id === selectedId);
+  if (
+    !sel ||
+    sel.destroyed ||
+    sel.immobilised ||
+    sel.chassis !== 'heavy' ||
+    sel.team !== currentTeam ||
+    teamControllers[currentTeam] !== 'human'
+  ) {
+    pivotControlsEl.hidden = true;
+    return;
+  }
+
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  if (w === 0 || h === 0) {
+    pivotControlsEl.hidden = true;
+    return;
+  }
+
+  const world = board.tileToWorld(sel.tile);
+  const elev = elevationAt(sel.tile);
+  _projectVec.set(world.x, world.y + elev + 0.55, world.z);
+  _projectVec.project(isoCam.camera);
+
+  if (_projectVec.z < -1 || _projectVec.z > 1) {
+    pivotControlsEl.hidden = true;
+    return;
+  }
+
+  const x = ((_projectVec.x + 1) / 2) * w;
+  const y = ((-_projectVec.y + 1) / 2) * h;
+
+  pivotControlsEl.style.left = `${x}px`;
+  pivotControlsEl.style.top = `${y + 34}px`;
+
+  const cost = turnApCost(sel);
+  pivotCostEl.textContent = cost > 0 ? `${cost} AP` : 'free';
+  const canTurn =
+    sel.stunnedTurns === 0 &&
+    (cost === 0 || sel.ap >= cost);
+  pivotLeftBtn.disabled = !canTurn;
+  pivotRightBtn.disabled = !canTurn;
+  pivotControlsEl.hidden = false;
 }
 
 // ----- Turn-in-place action ------------------------------------------------
 //
 // After moving, a mech faces its last step direction automatically. To
-// re-orient WITHOUT moving (e.g. to set up next turn's attack arc) the
-// player presses [,] / [.] to pivot 60° per press. Heavy chassis pay
-// 1 AP per pivot; light & medium pivot for free.
-
-const TURN_DEG = 60;
+// re-orient WITHOUT moving, pivot one hex direction with [,] / [.] or the
+// on-screen buttons. Heavy chassis pay 1 AP per pivot.
 
 function turnApCost(unit: Unit): number {
   return unit.chassis === 'heavy' ? 1 : 0;
 }
 
 /**
- * Pivot the unit's facing by ±60°. Returns true on success.
- * Validates AP / team / stun / etc; emits status messages on failure.
+ * Pivot the unit's facing by one hex direction (60° on the grid). Returns
+ * true on success. Validates AP / team / stun / etc.
  */
 function doTurnUnit(unit: Unit, direction: 'left' | 'right'): boolean {
   if (gameOver || mode === 'animating' || aiActive) return false;
   if (mode === 'nukeTargeting') return false;
   if (unit.destroyed) return false;
+  if (isCoopActive()) {
+    if (!canControlUnit(unit.id)) {
+      setStatus('Not your sub-phase or mech.');
+      return false;
+    }
+    sendCoopAction({ kind: 'pivot', unitId: unit.id, direction });
+    return true;
+  }
   if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
     setStatus(`Not ${teamName(unit.team)}'s turn.`);
     return false;
@@ -1552,8 +1841,12 @@ function doTurnUnit(unit: Unit, direction: 'left' | 'right'): boolean {
     return false;
   }
 
-  const delta = direction === 'left' ? -TURN_DEG : TURN_DEG;
-  unit.facingDeg = ((unit.facingDeg + delta) % 360 + 360) % 360;
+  const centerDir = facingDegToDirIndex(unit.facingDeg);
+  const newDirIdx = direction === 'left'
+    ? (centerDir + 5) % 6
+    : (centerDir + 1) % 6;
+  const faceTile = hexNeighbor(unit.tile, newDirIdx);
+  unit.facingDeg = hexFacingDegrees(unit.tile, faceTile);
   unit.mech.setFacing(unit.facingDeg);
 
   if (cost > 0) {
@@ -1566,7 +1859,9 @@ function doTurnUnit(unit: Unit, direction: 'left' | 'right'): boolean {
     setStatus(`${describeUnit(unit)} pivoted ${direction}.`);
   }
 
-  refreshAfterAction();
+  refreshTileVisuals(null);
+  updateMoveCostOverlay();
+  updatePivotControls();
   renderDashboard();
   return true;
 }
@@ -1615,6 +1910,15 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
     setStatus(
       `Move costs ${apCost} AP but ${describeUnit(unit)} only has ${unit.ap}.`,
     );
+    return;
+  }
+
+  if (isCoopActive()) {
+    if (!canControlUnit(unit.id)) {
+      setStatus('Not your mech or sub-phase.');
+      return;
+    }
+    sendCoopAction({ kind: 'move', unitId: unit.id, to: dest });
     return;
   }
 
@@ -2337,6 +2641,26 @@ async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
     setStatus(`${describeUnit(target)} is out of range (${dist}/${range}). Move closer.`);
     return;
   }
+  if (!canShootAtTile(shooter, target.tile)) {
+    setStatus(
+      `${describeUnit(shooter)} can only fire forward — pivot with , / . ` +
+      `(heavy costs 1 AP per turn).`,
+    );
+    return;
+  }
+
+  if (isCoopActive()) {
+    if (!canControlUnit(shooter.id)) {
+      setStatus('Not your sub-phase.');
+      return;
+    }
+    sendCoopAction({
+      kind: 'shoot',
+      unitId: shooter.id,
+      targetUnitId: target.id,
+    });
+    return;
+  }
 
   const { mult, buildingsCrossed } = coverMultiplier(shooter.tile, target.tile);
   const hg = highGroundBonus(shooter, target);
@@ -2420,6 +2744,13 @@ async function fireAtTerrain(shooter: Unit, terrain: TerrainPiece): Promise<void
   const range = shooter.attackRange.effective;
   if (dist > range) {
     setStatus(`${terrain.kind} is out of range (${dist}/${range}). Move closer.`);
+    return;
+  }
+  if (!canShootAtTile(shooter, terrain.tile)) {
+    setStatus(
+      `${describeUnit(shooter)} can only fire forward — pivot with , / . ` +
+      `(heavy costs 1 AP per turn).`,
+    );
     return;
   }
 
@@ -2613,6 +2944,11 @@ function buildDashSlot(u: Unit): HTMLElement {
           ? '<span class="tag crate">ON CRATE</span>'
           : `<span class="tag">${u.className.toUpperCase()}</span>`;
 
+  const techBonus = apBonusFromKills(u.techKills);
+  const techTag = u.team === 1
+    ? `<div class="dash-bar dash-tech"><label>T</label><span>${u.techKills} kills · +${techBonus} AP</span></div>`
+    : '';
+
   // Header + bars (click-to-select on header area).
   const header = document.createElement('div');
   header.className = 'dash-head';
@@ -2631,6 +2967,7 @@ function buildDashSlot(u: Unit): HTMLElement {
       <div class="bar"><div class="fill" style="width:${apPct}%"></div></div>
       <span>${u.ap}/${maxAp}</span>
     </div>
+    ${techTag}
   `;
   if (cardClickable) {
     header.addEventListener('click', () => {
@@ -2765,8 +3102,12 @@ async function aiPlayMech(mech: Unit): Promise<void> {
     const dist = hexDistance(mech.tile, target.tile);
     const range = mech.attackRange.effective;
 
-    // 1) In range & can afford a shot → fire.
-    if (dist <= range && mech.ap >= AP_COST.shoot) {
+    // 1) In range, in arc (heavy), and can afford a shot → fire.
+    if (
+      dist <= range &&
+      mech.ap >= AP_COST.shoot &&
+      canShootAtTile(mech, target.tile)
+    ) {
       await delay(AI_THINK_MS);
       if (gameOver) return;
       await fireAtUnit(mech, target);
@@ -3190,8 +3531,7 @@ stage.addTicker((_dt, total) => {
   for (const m of mines)  m.mesh.tick(total);
 });
 
-// Move-cost overlay: keep the AP labels glued to their hexes as the
-// camera moves. Cheap — at most 6 DOM nodes are touched per frame.
+// Move-cost overlay: keep AP labels glued to reachable hexes as the camera moves.
 stage.addTicker(() => {
   updateMoveCostOverlay();
 });

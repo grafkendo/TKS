@@ -16,7 +16,8 @@
 // How to run:
 //   1. npm install
 //   2. npm run build:local    # produces dist/local/
-//   3. npm run server         # listens on http://0.0.0.0:8080
+//   3. npm run build:coop     # produces server/coopEngine.js
+//   4. npm run server         # listens on http://0.0.0.0:8080
 //
 // This is intentionally tiny. No persistence, no auth, no rate limiting.
 // For LAN / friend-with-me-this-weekend use. Add what you need.
@@ -27,8 +28,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve, join, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-
-// We can't import TS directly from Node. Two options:
+import { attachWs3d } from './ws3d.mjs';
 //   (a) Ship a JS-compiled copy of rules.ts (e.g. via tsc --emit).
 //   (b) Inline a tiny JS port here.
 // We choose (a): the build:local step bundles core into dist/local/, but for
@@ -91,14 +91,20 @@ const server = createServer((req, res) => {
 // ---------------------------------------------------------------------------
 
 const wss = new WebSocketServer({ noServer: true });
+const wss3d = new WebSocketServer({ noServer: true });
+attachWs3d(wss3d);
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-  if (url.pathname !== '/ws') {
-    socket.destroy();
+  if (url.pathname === '/ws') {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
     return;
   }
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  if (url.pathname === '/ws3d') {
+    wss3d.handleUpgrade(req, socket, head, (ws) => wss3d.emit('connection', ws, req));
+    return;
+  }
+  socket.destroy();
 });
 
 /**
@@ -181,12 +187,28 @@ wss.on('connection', (ws, req) => {
 // Start
 // ---------------------------------------------------------------------------
 
+server.on('error', (err) => {
+  if (err?.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use.`);
+    console.error('Stop the other Tackticus server, or run on another port:');
+    console.error('  PowerShell: $env:PORT=8081; npm run server');
+    console.error('  (If you change PORT, update vite.config.ts proxy target to match.)');
+    process.exit(1);
+  }
+  throw err;
+});
+
 server.listen(PORT, HOST, () => {
   console.log(`Tackticus server running:`);
   console.log(`  HTTP  http://${HOST}:${PORT}/      (serves ${STATIC_ROOT})`);
-  console.log(`  WS    ws://${HOST}:${PORT}/ws?room=<roomid>`);
+  console.log(`  WS    ws://${HOST}:${PORT}/ws?room=<roomid>     (2D abstract)`);
+  console.log(`  WS3D  ws://${HOST}:${PORT}/ws3d?room=<id>&name=<you>  (3D co-op PvE)`);
   console.log('');
   if (!existsSync(STATIC_ROOT)) {
     console.log('WARN: dist/local/ does not exist. Run `npm run build:local` first.');
+  }
+  const coopEngine = resolve(__dirname, 'coopEngine.js');
+  if (!existsSync(coopEngine)) {
+    console.log('WARN: server/coopEngine.js missing. Run `npm run build:coop` for 3D co-op.');
   }
 });

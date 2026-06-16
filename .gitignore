@@ -7,6 +7,8 @@ tackticus.css
 .idea/
 dist/
 build/
+server/coopEngine.js
+vite.config.ts.timestamp-*.mjs
 .vitest-cache/
 .vite/
 coverage/

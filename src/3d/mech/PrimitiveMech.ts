@@ -26,6 +26,7 @@ import {
   MechConfig,
   TEAM_PALETTES,
   WeaponType,
+  gameFacingToModelYaw,
 } from './types';
 
 // ----- Chassis dimensions table --------------------------------------------
@@ -109,7 +110,8 @@ export class PrimitiveMech implements MechAsset {
   }
 
   setFacing(degrees: number): void {
-    this.object.rotation.y = THREE.MathUtils.degToRad(degrees);
+    const modelYaw = gameFacingToModelYaw(degrees);
+    this.object.rotation.y = THREE.MathUtils.degToRad(modelYaw);
   }
 
   setDamageLevel(level: number): void {

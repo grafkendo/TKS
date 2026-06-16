@@ -35,6 +35,12 @@ export default defineConfig({
     port: 5173,
     open: '/',
     host: '127.0.0.1',
+    proxy: {
+      '/ws3d': {
+        target: 'ws://127.0.0.1:8080',
+        ws: true,
+      },
+    },
   },
   test: {
     include: ['**/*.test.ts'],

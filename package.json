@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build:local": "vite build",
+    "build:coop": "vite build --config vite.coop.config.ts",
+    "build:all": "npm run build:local && npm run build:coop",
+    "dev:coop": "npm-run-all --parallel dev server",
     "preview:local": "vite preview",
     "build:bga:ts": "rollup -c",
     "build:bga:scss": "sass --no-source-map src/scss/tackticus.scss tackticus.css",

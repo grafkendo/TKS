@@ -13,6 +13,11 @@ export const TECH_AP_PER_MILESTONE = 1;
 
 export const TECH_MODIFIER_SOURCE = 'tech:kills';
 
+/** Per-unit modifier source so each mech tracks its own kill bonuses. */
+export function techModifierSource(unitId: string): string {
+  return `${TECH_MODIFIER_SOURCE}:${unitId}`;
+}
+
 /** Tech points earned per confirmed enemy kill. */
 export const TECH_POINTS_PER_KILL = 1;
 

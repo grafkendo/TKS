@@ -15,7 +15,7 @@ RUN npm ci
 
 # Copy source and produce dist/local/
 COPY . .
-RUN npm run build:local
+RUN npm run build:all
 
 ENV HOST=0.0.0.0
 ENV PORT=8080

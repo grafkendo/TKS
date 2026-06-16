@@ -18,7 +18,7 @@ import {
   hexToWorld,
 } from '../hex/HexCoord';
 
-export type TileVisualState = 'idle' | 'hover' | 'selected' | 'move' | 'attack';
+export type TileVisualState = 'idle' | 'hover' | 'selected' | 'move' | 'fireArc' | 'attack';
 
 // ---------- Tunables (flat-top hex tiles) -----------------------------------
 
@@ -162,7 +162,8 @@ class TileMesh {
       case 'idle':     mat.opacity = 0;    mat.color.set(0xffce4d); break;
       case 'hover':    mat.opacity = 0.22; mat.color.set(0xffce4d); break;
       case 'selected': mat.opacity = 0.6;  mat.color.set(0xffce4d); break;
-      case 'move':     mat.opacity = 0.32; mat.color.set(0x3bd4a4); break;
+      case 'move':     mat.opacity = 0.16; mat.color.set(0x3bd4a4); break;
+      case 'fireArc':  mat.opacity = 0.26; mat.color.set(0x8ef0c8); break;
       case 'attack':   mat.opacity = 0.42; mat.color.set(0xff5c6c); break;
     }
   }

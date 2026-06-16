@@ -72,26 +72,94 @@
       .move-cost-label {
         position: absolute;
         transform: translate(-50%, -50%);
-        background: rgba(12,17,22,0.78);
-        color: #ffce4d;
+        background: rgba(12,17,22,0.45);
+        color: rgba(255,206,77,0.88);
         font-size: 11px;
         font-weight: 700;
         font-family: ui-monospace, monospace;
         padding: 2px 6px;
         border-radius: 10px;
-        border: 1px solid rgba(255,206,77,0.5);
-        box-shadow: 0 2px 6px rgba(0,0,0,0.45);
+        border: 1px solid rgba(255,206,77,0.35);
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
         white-space: nowrap;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+        text-shadow: 0 1px 2px rgba(0,0,0,0.5);
       }
       .move-cost-label.expensive {
-        color: #ff9b4d;
-        border-color: rgba(255,155,77,0.6);
+        color: rgba(255,155,77,0.9);
+        border-color: rgba(255,155,77,0.4);
       }
       .move-cost-label.blocked {
         color: #ff5c6c;
         border-color: rgba(255,92,108,0.55);
       }
+      .pivot-controls {
+        position: absolute;
+        transform: translate(-50%, 0);
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        pointer-events: auto;
+        z-index: 6;
+      }
+      .pivot-controls[hidden] { display: none !important; }
+      .pivot-btn {
+        width: 32px;
+        height: 28px;
+        padding: 0;
+        border-radius: 8px;
+        border: 1px solid rgba(142,240,200,0.45);
+        background: rgba(12,17,22,0.72);
+        color: #8ef0c8;
+        font-size: 16px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+      }
+      .pivot-btn:hover:not(:disabled) {
+        background: rgba(142,240,200,0.18);
+        border-color: rgba(142,240,200,0.7);
+      }
+      .pivot-btn:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+      .pivot-cost {
+        font-size: 10px;
+        font-weight: 700;
+        color: rgba(255,206,77,0.85);
+        font-family: ui-monospace, monospace;
+        white-space: nowrap;
+      }
+      .dash-tech > span { color: #8ef0c8; font-size: 10px; }
+      .coop-lobby {
+        position: absolute; inset: 0; z-index: 20;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(8,12,16,0.82); backdrop-filter: blur(6px);
+      }
+      .coop-lobby[hidden] { display: none !important; }
+      .coop-panel {
+        background: rgba(26,35,43,0.95);
+        border: 1px solid rgba(255,206,77,0.25);
+        border-radius: 12px; padding: 20px 24px; min-width: 300px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+      }
+      .coop-panel h2 { margin: 0 0 8px; font-size: 18px; color: #ffce4d; }
+      .coop-panel label { display: block; font-size: 12px; color: #aab2bd; margin: 12px 0 4px; }
+      .coop-panel input {
+        width: 100%; padding: 8px 10px; border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.12); background: #131a21; color: #e8ecf0;
+      }
+      .coop-roster { margin: 12px 0; font-size: 13px; color: #cfd5dd; }
+      .coop-player { padding: 4px 0; }
+      .coop-actions { display: flex; gap: 8px; margin-top: 14px; }
+      .coop-actions button {
+        flex: 1; padding: 10px; border-radius: 8px; border: none;
+        font-weight: 600; cursor: pointer;
+      }
+      #coop-ready-btn { background: #2d3c47; color: #cfd5dd; }
+      #coop-ready-btn.ready { background: #3bd4a4; color: #0c1116; }
+      #coop-start-btn { background: #ffce4d; color: #1a232b; }
+      #coop-start-btn[hidden] { display: none; }
       .stats {
         position: absolute; top: 12px; right: 12px;
         background: rgba(26,35,43,0.85); backdrop-filter: blur(8px);
@@ -342,7 +410,7 @@
           <p>You play <span style="color:#ff7a7a;font-weight:600">Red</span> (3 AP/turn). Allies are passable — you can walk through each other.</p>
           <p>Move = 1 AP (clear) / 2 AP (rubble or rough terrain) · Shoot = 1 AP · Range 1-2</p>
           <p>Click a <span style="color:#3bd4a4;font-weight:600">green hex</span> to move; click a <span style="color:#ff5c6c;font-weight:600">red target</span> to fire.</p>
-          <p style="color:#aab2bd">Mechs auto-face their last move direction. Turn in place with <kbd>,</kbd>/<kbd>.</kbd> — <b>heavy</b> chassis costs 1 AP per turn, <b>light</b>/<b>medium</b> turn free.</p>
+          <p style="color:#aab2bd">Mechs auto-face their last move direction. <b>Heavy</b> pivots with on-screen buttons (1 AP) or <kbd>,</kbd>/<kbd>.</kbd>. Fire arc: 3 hexes at range 1, 8 hexes (two rows) at range 2.</p>
           <p style="color:#aab2bd">Shots through buildings deal <b>half damage</b>. Platforms give <b>+1 damage</b> (high ground).</p>
 
           <h2>Enemy types</h2>
@@ -390,6 +458,21 @@
             <code>tackticus.endTurn()</code> · <code>tackticus.winner()</code>
           </p>
           <a class="home" href="../index.html">← back</a>
+        </div>
+      </div>
+
+      <div id="coop-lobby" class="coop-lobby" hidden>
+        <div class="coop-panel">
+          <h2>Co-op squad</h2>
+          <p style="margin:0;font-size:13px;color:#aab2bd">Room <strong id="coop-room-label">—</strong> — friends vs AI. Each player runs their mechs, then the AI strikes back.</p>
+          <label for="coop-name">Your callsign</label>
+          <input id="coop-name" type="text" maxlength="24" placeholder="Guest" />
+          <div class="coop-roster" id="coop-roster"></div>
+          <div class="coop-actions">
+            <button type="button" id="coop-ready-btn">Ready</button>
+            <button type="button" id="coop-start-btn" hidden>Start mission</button>
+          </div>
+          <p style="margin:12px 0 0;font-size:11px;color:#7c8590">Share this URL with friends. Host starts when ready.</p>
         </div>
       </div>
 
