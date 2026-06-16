@@ -151,6 +151,15 @@
       }
       .coop-roster { margin: 12px 0; font-size: 13px; color: #cfd5dd; }
       .coop-player { padding: 4px 0; }
+      .coop-mech-pick { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+      .coop-mech-btn {
+        flex: 1; min-width: 72px; padding: 8px 10px; border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.12); background: #1e2830; color: #cfd5dd;
+        font-weight: 600; cursor: pointer; font-size: 12px;
+      }
+      .coop-mech-btn.picked { border-color: #3bd4a4; background: rgba(59,212,164,0.15); color: #8ef0c8; }
+      .coop-mech-btn:hover { border-color: rgba(255,206,77,0.4); }
+      #coop-mech-count { margin: 6px 0 0; font-size: 11px; color: #7c8590; }
       .coop-actions { display: flex; gap: 8px; margin-top: 14px; }
       .coop-actions button {
         flex: 1; padding: 10px; border-radius: 8px; border: none;
@@ -467,12 +476,15 @@
           <p style="margin:0;font-size:13px;color:#aab2bd">Room <strong id="coop-room-label">—</strong> — friends vs AI. Each player runs their mechs, then the AI strikes back.</p>
           <label for="coop-name">Your callsign</label>
           <input id="coop-name" type="text" maxlength="24" placeholder="Guest" />
+          <label>Your squad — pick 1–3 mechs (click again to remove)</label>
+          <div class="coop-mech-pick" id="coop-mech-pick"></div>
+          <p id="coop-mech-count">0 / 3 mechs selected</p>
           <div class="coop-roster" id="coop-roster"></div>
           <div class="coop-actions">
             <button type="button" id="coop-ready-btn">Ready</button>
             <button type="button" id="coop-start-btn" hidden>Start mission</button>
           </div>
-          <p style="margin:12px 0 0;font-size:11px;color:#7c8590">Share this URL with friends. Host starts when ready.</p>
+          <p style="margin:12px 0 0;font-size:11px;color:#7c8590">Select mechs → Ready → host starts the mission.</p>
         </div>
       </div>
 

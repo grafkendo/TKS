@@ -1,8 +1,5 @@
 // ============================================================================
 // Online co-op PvE — serializable types and wire protocol.
-//
-// Friends control team-1 mechs in sequential sub-phases; server runs AI for
-// team 2. Guest names + room codes for MVP (no accounts yet).
 // ============================================================================
 
 import type { HexCoord } from '../hex/HexCoord';
@@ -12,6 +9,16 @@ export type CoopPhase = 'lobby' | 'human' | 'ai' | 'ended';
 
 export type ChassisKind = 'light' | 'medium' | 'heavy';
 
+/** Serializable starting item (client maps to Item factories). */
+export type CoopItemSpec =
+  | { kind: 'repairKit'; amount: number }
+  | { kind: 'weapon'; bonus: number; label: string }
+  | { kind: 'armor'; bonus: number; label: string }
+  | { kind: 'rangeModule'; bonus: number; label: string }
+  | { kind: 'mine'; damage: number }
+  | { kind: 'tacticalNuke' }
+  | { kind: 'demoCharge' };
+
 /** Persistent room member (lobby + in-game ownership). */
 export interface CoopPlayer {
   id: string;
@@ -19,6 +26,8 @@ export interface CoopPlayer {
   /** 0 = first human slot, 1 = second. */
   slot: number;
   ready: boolean;
+  /** Lobby pick — up to 3 mechs this player will field. */
+  selectedMechs: ChassisKind[];
 }
 
 export interface CoopUnit {
@@ -37,6 +46,8 @@ export interface CoopUnit {
   facingDeg: number;
   destroyed: boolean;
   techKills: number;
+  /** Rolled once at spawn; client equips on first sync. */
+  items: CoopItemSpec[];
 }
 
 export interface CoopGameState {
@@ -46,6 +57,10 @@ export interface CoopGameState {
   tiles: string[];
   /** Hex keys that block movement (walls, buildings, etc.). */
   blockedTiles: string[];
+  /** Team-2 orbital drop pad hex keys. */
+  spawnPointTiles: string[];
+  /** Red-team deploy hex keys (south field). */
+  playerSpawnTiles: string[];
   units: CoopUnit[];
   players: CoopPlayer[];
   hostPlayerId: string;
@@ -53,6 +68,7 @@ export interface CoopGameState {
   phase: CoopPhase;
   /** Which human may act during `human` phase. */
   activePlayerId: string | null;
+  nextEnemyId: number;
   outcome: GameOutcome;
 }
 
@@ -60,6 +76,7 @@ export interface CoopGameState {
 
 export type CoopClientMessage =
   | { type: 'setName'; name: string }
+  | { type: 'setMechSelection'; mechs: ChassisKind[] }
   | { type: 'setReady'; ready: boolean }
   | { type: 'startGame' }
   | { type: 'action'; action: CoopAction };
@@ -88,6 +105,7 @@ export type CoopGameEvent =
   | { kind: 'moved'; unitId: string; path: HexCoord[] }
   | { kind: 'shot'; unitId: string; targetUnitId: string; damage: number }
   | { kind: 'pivoted'; unitId: string; facingDeg: number }
+  | { kind: 'spawned'; unitId: string; tile: HexCoord }
   | { kind: 'phase'; phase: CoopPhase; activePlayerId: string | null }
   | { kind: 'message'; text: string };
 

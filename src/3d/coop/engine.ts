@@ -2,13 +2,15 @@
 // Co-op rules engine — authoritative move / shoot / pivot / phase flow.
 // ============================================================================
 
-import { hexDistance, hexEquals, hexFacingDegrees, hexKey, hexNeighbor } from '../hex/HexCoord';
+import { hexDistance, hexEquals, hexFacingDegrees, hexFromKey, hexKey, hexNeighbor } from '../hex/HexCoord';
 import { facingDegToDirIndex } from '../hex/hexFacing';
 import { Pathfinder } from '../movement/Pathfinder';
 import { apBonusFromKills } from '../rules/techProgress';
 import { evaluateOutcome } from '../rules/winCondition';
+import { rollStartingLoadout } from './loadout';
 import { loadCoopMap } from './mapInit';
 import type {
+  ChassisKind,
   CoopAction,
   CoopActionResult,
   CoopGameEvent,
@@ -20,6 +22,7 @@ import type {
 const SHOOT_AP = 1;
 const MOVE_AP_CLEAR = 1;
 const MAX_MECHS_PER_PLAYER = 3;
+const PLAYER_FACING = 270;
 
 function unitAt(state: CoopGameState, h: { q: number; r: number }): CoopUnit | undefined {
   return state.units.find((u) => !u.destroyed && hexEquals(u.tile, h));
@@ -53,6 +56,7 @@ function applyTechToUnit(u: CoopUnit): CoopUnit {
   return { ...u, maxAp, ap: Math.min(u.ap, maxAp) };
 }
 
+/** Humans with at least one living mech, in slot order. */
 function livingHumans(state: CoopGameState): CoopPlayer[] {
   return state.players
     .slice()
@@ -62,13 +66,8 @@ function livingHumans(state: CoopGameState): CoopPlayer[] {
     );
 }
 
-function nextHumanId(state: CoopGameState, afterId: string | null): string | null {
-  const order = livingHumans(state).map((p) => p.id);
-  if (order.length === 0) return null;
-  if (!afterId) return order[0];
-  const idx = order.indexOf(afterId);
-  if (idx < 0) return order[0];
-  return order[(idx + 1) % order.length];
+function emptyPlayer(id: string, name: string, slot: number): CoopPlayer {
+  return { id, name, slot, ready: false, selectedMechs: [] };
 }
 
 export function createLobby(roomId: string, host: CoopPlayer): CoopGameState {
@@ -78,12 +77,15 @@ export function createLobby(roomId: string, host: CoopPlayer): CoopGameState {
     mapId: map.mapId,
     tiles: map.tiles,
     blockedTiles: map.blockedTiles,
+    spawnPointTiles: map.spawnPointTiles,
+    playerSpawnTiles: map.playerSpawnTiles,
     units: [],
-    players: [host],
+    players: [{ ...host, selectedMechs: host.selectedMechs ?? [] }],
     hostPlayerId: host.id,
     turnNumber: 0,
     phase: 'lobby',
     activePlayerId: null,
+    nextEnemyId: 1,
     outcome: { ended: false },
   };
 }
@@ -92,7 +94,10 @@ export function addPlayer(state: CoopGameState, player: CoopPlayer): CoopGameSta
   if (state.phase !== 'lobby') return state;
   if (state.players.length >= 2) return state;
   if (state.players.some((p) => p.id === player.id)) return state;
-  return { ...state, players: [...state.players, player] };
+  return {
+    ...state,
+    players: [...state.players, { ...emptyPlayer(player.id, player.name, player.slot), selectedMechs: [] }],
+  };
 }
 
 export function setPlayerName(state: CoopGameState, playerId: string, name: string): CoopGameState {
@@ -105,7 +110,35 @@ export function setPlayerName(state: CoopGameState, playerId: string, name: stri
   };
 }
 
+export function setPlayerMechs(
+  state: CoopGameState,
+  playerId: string,
+  mechs: ChassisKind[],
+): CoopGameState {
+  if (state.phase !== 'lobby') return state;
+  if (mechs.length < 1 || mechs.length > MAX_MECHS_PER_PLAYER) {
+    throw new Error(`Pick 1–${MAX_MECHS_PER_PLAYER} mechs.`);
+  }
+  const valid: ChassisKind[] = ['light', 'medium', 'heavy'];
+  for (const m of mechs) {
+    if (!valid.includes(m)) throw new Error('Invalid mech type.');
+  }
+  return {
+    ...state,
+    players: state.players.map((p) =>
+      p.id === playerId
+        ? { ...p, selectedMechs: [...mechs], ready: false }
+        : p,
+    ),
+  };
+}
+
 export function setPlayerReady(state: CoopGameState, playerId: string, ready: boolean): CoopGameState {
+  const player = state.players.find((p) => p.id === playerId);
+  if (!player) return state;
+  if (ready && player.selectedMechs.length === 0) {
+    throw new Error('Select at least one mech before readying up.');
+  }
   return {
     ...state,
     players: state.players.map((p) =>
@@ -114,22 +147,35 @@ export function setPlayerReady(state: CoopGameState, playerId: string, ready: bo
   };
 }
 
-function makeElite(id: string, ownerId: string, tile: { q: number; r: number }, facingDeg: number, chassis: CoopUnit['chassis']): CoopUnit {
+function statsForChassis(chassis: ChassisKind): Pick<CoopUnit, 'maxAp' | 'maxHp' | 'ap' | 'hp' | 'damage' | 'attackRange'> {
+  switch (chassis) {
+    case 'light':
+      return { ap: 3, maxAp: 3, hp: 3, maxHp: 3, damage: 1, attackRange: 2 };
+    case 'medium':
+      return { ap: 2, maxAp: 2, hp: 3, maxHp: 3, damage: 1, attackRange: 2 };
+    case 'heavy':
+      return { ap: 3, maxAp: 3, hp: 4, maxHp: 4, damage: 2, attackRange: 1 };
+  }
+}
+
+function makePlayerMech(
+  id: string,
+  ownerId: string,
+  tile: { q: number; r: number },
+  chassis: ChassisKind,
+  rand: () => number,
+): CoopUnit {
   return {
     id,
     team: 1,
     ownerId,
     tile,
     chassis,
-    hp: 3,
-    maxHp: 3,
-    ap: 3,
-    maxAp: 3,
-    damage: 1,
-    attackRange: 2,
-    facingDeg,
+    facingDeg: PLAYER_FACING,
     destroyed: false,
     techKills: 0,
+    items: rollStartingLoadout(rand),
+    ...statsForChassis(chassis),
   };
 }
 
@@ -149,7 +195,21 @@ function makeGrunt(id: string, tile: { q: number; r: number }, facingDeg: number
     facingDeg,
     destroyed: false,
     techKills: 0,
+    items: [],
   };
+}
+
+function takeSpawnTile(state: CoopGameState, used: Set<string>): { q: number; r: number } | null {
+  for (const key of state.playerSpawnTiles) {
+    if (used.has(key)) continue;
+    if (state.blockedTiles.includes(key)) continue;
+    const tile = hexFromKey(key);
+    if (state.tiles.includes(key)) {
+      used.add(key);
+      return tile;
+    }
+  }
+  return null;
 }
 
 export function startGame(state: CoopGameState): CoopActionResult {
@@ -160,33 +220,37 @@ export function startGame(state: CoopGameState): CoopActionResult {
   if (readyPlayers.length === 0) {
     throw new Error('At least one player must ready up.');
   }
+  for (const p of readyPlayers) {
+    if (p.selectedMechs.length === 0) {
+      throw new Error(`${p.name} must select mechs before start.`);
+    }
+  }
 
   const map = loadCoopMap(state.mapId);
   const sorted = state.players.slice().sort((a, b) => a.slot - b.slot);
   const units: CoopUnit[] = [];
+  const usedTiles = new Set<string>();
+  let mechSeq = 1;
+  let randSeed = 0;
+  const rand = () => {
+    randSeed += 1;
+    return ((Math.sin(randSeed * 9999 + state.roomId.length) + 1) / 2);
+  };
 
-  const spawnPairs: Array<[string, typeof map.spawns.r1, CoopUnit['chassis']]> = [];
-  if (sorted[0]) {
-    spawnPairs.push(['r1', map.spawns.r1, 'light']);
-    spawnPairs.push(['r2', map.spawns.r2, 'heavy']);
-  }
-  if (sorted[1]) {
-    spawnPairs.push(['r3', { q: map.spawns.r1.q - 1, r: map.spawns.r1.r }, 'medium']);
-    spawnPairs.push(['r4', { q: map.spawns.r2.q + 1, r: map.spawns.r2.r }, 'medium']);
-  }
-
-  for (let i = 0; i < spawnPairs.length; i++) {
-    const [id, tile, chassis] = spawnPairs[i];
-    const owner = sorted[Math.floor(i / 2)] ?? sorted[0];
-    if (!owner) continue;
-    units.push(makeElite(id, owner.id, tile, 270, chassis));
+  for (const player of sorted) {
+    if (!player.ready) continue;
+    for (const chassis of player.selectedMechs.slice(0, MAX_MECHS_PER_PLAYER)) {
+      const tile = takeSpawnTile(state, usedTiles);
+      if (!tile) throw new Error('Not enough deploy tiles for selected mechs.');
+      const id = `r${mechSeq++}`;
+      units.push(makePlayerMech(id, player.id, tile, chassis, rand));
+    }
   }
 
   units.push(makeGrunt('b1', map.spawns.b1, 90));
   units.push(makeGrunt('b2', map.spawns.b2, 90));
-  units.push(makeGrunt('b3', { q: map.spawns.b1.q + 1, r: map.spawns.b1.r }, 90));
 
-  const activePlayerId = sorted[0]?.id ?? null;
+  const activePlayerId = livingHumans({ ...state, units })[0]?.id ?? null;
   const events: CoopGameEvent[] = [
     { kind: 'message', text: 'Mission start — clear the hostiles.' },
     { kind: 'phase', phase: 'human', activePlayerId },
@@ -198,6 +262,7 @@ export function startGame(state: CoopGameState): CoopActionResult {
     phase: 'human',
     turnNumber: 1,
     activePlayerId,
+    nextEnemyId: 3,
     outcome: evaluateOutcome(units),
   };
   return { state: next, events };
@@ -359,10 +424,13 @@ function endPhase(state: CoopGameState, playerId: string): CoopActionResult {
   const events: CoopGameEvent[] = [];
   const humans = livingHumans(state);
   const currentIdx = humans.findIndex((p) => p.id === playerId);
-  const hasMoreHumans = currentIdx >= 0 && currentIdx < humans.length - 1;
 
-  if (hasMoreHumans) {
+  if (currentIdx >= 0 && currentIdx < humans.length - 1) {
     const nextId = humans[currentIdx + 1].id;
+    events.push({
+      kind: 'message',
+      text: `${state.players.find((p) => p.id === nextId)?.name ?? 'Next player'}'s sub-phase.`,
+    });
     events.push({ kind: 'phase', phase: 'human', activePlayerId: nextId });
     return {
       state: { ...state, activePlayerId: nextId },
@@ -370,7 +438,7 @@ function endPhase(state: CoopGameState, playerId: string): CoopActionResult {
     };
   }
 
-  // All humans done — signal AI phase (server runs ai.ts).
+  events.push({ kind: 'message', text: 'Enemy phase — orbital reinforcements incoming.' });
   events.push({ kind: 'phase', phase: 'ai', activePlayerId: null });
   return {
     state: { ...state, phase: 'ai', activePlayerId: null },

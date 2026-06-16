@@ -5,11 +5,17 @@
 import type { CoopGameEvent, CoopGameState } from './types';
 import { applyAction, beginHumanRound } from './engine';
 import { aiStep } from './aiSteps';
+import { tickEnemySpawns } from './spawns';
 
 export function runAiPhase(state: CoopGameState): { state: CoopGameState; events: CoopGameEvent[] } {
   let s: CoopGameState = { ...state, phase: 'ai', activePlayerId: null };
   const events: CoopGameEvent[] = [];
 
+  if (s.outcome.ended) return { state: s, events };
+
+  const spawnTick = tickEnemySpawns(s);
+  s = spawnTick.state;
+  events.push(...spawnTick.events);
   if (s.outcome.ended) return { state: s, events };
 
   for (let safety = 0; safety < 48; safety++) {

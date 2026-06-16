@@ -141,6 +141,7 @@ import {
   makeRepairKit,
   makeMine,
   makeDemoCharge,
+  makeDemoCharge,
   makeTacticalNuke,
 } from './items/factory';
 import { rollItem } from './items/randomItem';
@@ -168,7 +169,7 @@ import {
   coopServerState,
   coopPlayerId,
 } from './coop/coopSession';
-import type { CoopGameState } from './coop/types';
+import type { CoopGameState, CoopItemSpec } from './coop/types';
 
 // ----- Tunables ------------------------------------------------------------
 
@@ -967,6 +968,34 @@ let aiActive = false;
 
 const coopParams = parseCoopParams();
 
+function applyCoopLoadout(unit: Unit, specs: CoopItemSpec[]): void {
+  for (const spec of specs) {
+    switch (spec.kind) {
+      case 'repairKit':
+        addItem(unit.inventory, makeRepairKit(spec.amount));
+        break;
+      case 'weapon':
+        addItem(unit.inventory, makeWeapon(spec.bonus, spec.label));
+        break;
+      case 'armor':
+        addItem(unit.inventory, makeArmor(spec.bonus, spec.label));
+        break;
+      case 'rangeModule':
+        addItem(unit.inventory, makeRangeModule(spec.bonus, spec.label));
+        break;
+      case 'mine':
+        addItem(unit.inventory, makeMine(spec.damage));
+        break;
+      case 'tacticalNuke':
+        addItem(unit.inventory, makeTacticalNuke());
+        break;
+      case 'demoCharge':
+        addItem(unit.inventory, makeDemoCharge());
+        break;
+    }
+  }
+}
+
 async function syncFromCoopServer(state: CoopGameState): Promise<void> {
   for (const su of state.units) {
     let u = units.find((x) => x.id === su.id);
@@ -981,9 +1010,8 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
         chassis: su.chassis,
       });
       u.ownerId = su.ownerId;
-      if (su.team === 1 && su.ownerId) {
-        addItem(u.inventory, makeTacticalNuke());
-        addItem(u.inventory, makeRepairKit(2));
+      if (su.team === 1 && su.items.length > 0) {
+        applyCoopLoadout(u, su.items);
       }
     }
 
@@ -1026,7 +1054,11 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
   renderDashboard();
   if (selectedId) {
     const sel = units.find((u) => u.id === selectedId);
-    if (sel && !sel.destroyed) recomputeReachable(sel);
+    if (!sel || sel.destroyed || (isCoopActive() && !canControlUnit(sel.id))) {
+      deselect();
+    } else {
+      recomputeReachable(sel);
+    }
   }
   refreshTileVisuals(null);
 
@@ -1046,6 +1078,7 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
 (async () => {
   if (coopParams) {
     spawnInitialObjectives();
+    spawnInitialSpawnPoints();
     setStatus('Connecting to co-op room…');
     initCoopSession(coopParams, {
       setStatus,
@@ -2891,10 +2924,9 @@ function replaceWithRubble(terrain: TerrainPiece): void {
 let dashboardTeam: 1 | 2 = 1;
 
 function renderDashboard(): void {
-  // Show controlled mechs (defaulting to team 1 / Red). Capped to DASHBOARD_SLOTS.
-  const slots = units
-    .filter((u) => u.team === dashboardTeam)
-    .slice(0, DASHBOARD_SLOTS);
+  const slots = isCoopActive() && coopPlayerId()
+    ? units.filter((u) => u.ownerId === coopPlayerId() && u.team === 1)
+    : units.filter((u) => u.team === dashboardTeam).slice(0, DASHBOARD_SLOTS);
 
   dashboardEl.innerHTML = '';
 
@@ -2903,12 +2935,13 @@ function renderDashboard(): void {
     dashboardEl.appendChild(slot);
   }
 
-  // Pad to DASHBOARD_SLOTS so layout stays stable as mechs die / spawn.
-  for (let i = slots.length; i < DASHBOARD_SLOTS; i++) {
-    const empty = document.createElement('div');
-    empty.className = 'dash-empty';
-    empty.textContent = '— empty slot —';
-    dashboardEl.appendChild(empty);
+  if (!isCoopActive()) {
+    for (let i = slots.length; i < DASHBOARD_SLOTS; i++) {
+      const empty = document.createElement('div');
+      empty.className = 'dash-empty';
+      empty.textContent = '— empty slot —';
+      dashboardEl.appendChild(empty);
+    }
   }
 }
 
@@ -2921,7 +2954,9 @@ function buildDashSlot(u: Unit): HTMLElement {
   if (u.destroyed) slot.classList.add('destroyed');
   else if (u.immobilised) slot.classList.add('immobilised');
 
-  const playerTurn = teamControllers[currentTeam] === 'human' && currentTeam === u.team;
+  const playerTurn = isCoopActive()
+    ? canControlUnit(u.id)
+    : teamControllers[currentTeam] === 'human' && currentTeam === u.team;
   const cardClickable = !u.destroyed && !gameOver && !aiActive && playerTurn;
   if (!cardClickable) slot.classList.add('locked');
 

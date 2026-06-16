@@ -7,6 +7,7 @@ import {
   createLobby,
   addPlayer,
   setPlayerName,
+  setPlayerMechs,
   setPlayerReady,
   startGame,
   applyAction,
@@ -45,7 +46,7 @@ export function attachWs3d(wss) {
     let role = 'spectator';
 
     if (!room) {
-      const host = { id: playerId, name, slot: 0, ready: false };
+      const host = { id: playerId, name, slot: 0, ready: false, selectedMechs: [] };
       room = {
         state: createLobby(roomId, host),
         clients: [],
@@ -59,6 +60,7 @@ export function attachWs3d(wss) {
         name,
         slot: room.state.players.length,
         ready: false,
+        selectedMechs: [],
       };
       room.state = addPlayer(room.state, newcomer);
       role = 'player';
@@ -91,6 +93,9 @@ export function attachWs3d(wss) {
       try {
         if (msg.type === 'setName' && role === 'player') {
           room.state = setPlayerName(room.state, playerId, msg.name);
+          sendState(room);
+        } else if (msg.type === 'setMechSelection' && role === 'player') {
+          room.state = setPlayerMechs(room.state, playerId, msg.mechs);
           sendState(room);
         } else if (msg.type === 'setReady' && role === 'player') {
           room.state = setPlayerReady(room.state, playerId, !!msg.ready);
