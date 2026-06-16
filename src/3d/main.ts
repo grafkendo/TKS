@@ -146,6 +146,8 @@ import {
 import { rollItem } from './items/randomItem';
 import { rollCrateTrap, type CrateTrapOutcome } from './items/crateTraps';
 import { getCrateLoader } from './items/getCrateLoader';
+import { preloadBuildingTextures } from './terrain/buildingTextures';
+import { preloadSpiderTexture } from './mech/spiderTextures';
 import { createPlacedMineMesh, type PickupMeshHandle } from './items/PickupMesh';
 import { nukeBlastHexes, resolveNukeTrajectory } from './items/nukeBlast';
 import {
@@ -1076,6 +1078,12 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
 }
 
 (async () => {
+  await Promise.all([
+    getCrateLoader().preload(),
+    preloadBuildingTextures(),
+    preloadSpiderTexture(),
+  ]);
+
   if (coopParams) {
     spawnInitialObjectives();
     spawnInitialSpawnPoints();

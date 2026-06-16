@@ -6,6 +6,8 @@ import type { ChassisType, MechAsset, MechConfig, MechAssetLoader } from './type
 import { GltfMech } from './GltfMech';
 import { GltfTemplateCache } from './gltfCache';
 import { PrimitiveMech } from './PrimitiveMech';
+import { SpiderMech } from './SpiderMech';
+import { loadSpiderTexture } from './spiderTextures';
 
 type GltfRegistration = { url: string };
 
@@ -22,6 +24,16 @@ export class DefaultAssetLoader implements MechAssetLoader {
   }
 
   async loadMech(config: MechConfig): Promise<MechAsset> {
+    if (config.chassis === 'spider') {
+      try {
+        const texture = await loadSpiderTexture();
+        return SpiderMech.create(config, texture);
+      } catch (err) {
+        console.warn('[AssetLoader] spider texture unavailable — using PrimitiveMech.', err);
+        return new PrimitiveMech({ ...config, chassis: 'light' });
+      }
+    }
+
     const reg = this.gltfRegistry.get(config.chassis);
     if (reg) {
       try {

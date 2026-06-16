@@ -66,6 +66,14 @@ const CHASSIS: Record<ChassisType, ChassisDims> = {
     legH: 0.85, legR: 0.24,
     totalScale: 1.05,
   },
+  spider: {
+    torsoW: 0.7, torsoH: 0.55, torsoD: 0.55,
+    cockpitR: 0.22,
+    shoulderW: 0.15, shoulderH: 0.18,
+    armL: 0.55, armR: 0.10,
+    legH: 0.70, legR: 0.14,
+    totalScale: 1.0,
+  },
 };
 
 // ============================================================================

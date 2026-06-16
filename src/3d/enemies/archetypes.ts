@@ -73,7 +73,7 @@ export const ELITE: EnemyArchetype = {
 export const GRUNT: EnemyArchetype = {
   key: 'grunt',
   displayName: 'Grunt',
-  description: '1 AP, moves 1 hex per turn, 1 HP. The basic enemy.',
+  description: '1 AP, moves 1 hex per turn, 1 HP. Basic spider drone.',
   apMax: 1,
   hpMax: 1,
   damage: 1,
@@ -81,9 +81,9 @@ export const GRUNT: EnemyArchetype = {
   armorThreshold: 0,
   movementMode: 'burst',
   movementRange: 1,
-  chassis: 'light',
+  chassis: 'spider',
   weaponRight: 'beam',
-  visualScale: 0.7,
+  visualScale: 0.85,
   haloColor: '#7a8a9b',
 };
 
@@ -91,7 +91,7 @@ export const GRUNT: EnemyArchetype = {
 export const SCOUT: EnemyArchetype = {
   key: 'scout',
   displayName: 'Scout',
-  description: '1 AP, dashes 2 hexes per move, 1 HP. Fast but brittle.',
+  description: '1 AP, dashes 2 hexes per move, 1 HP. Fast spider drone.',
   apMax: 1,
   hpMax: 1,
   damage: 1,
@@ -99,9 +99,9 @@ export const SCOUT: EnemyArchetype = {
   armorThreshold: 0,
   movementMode: 'burst',
   movementRange: 2,
-  chassis: 'light',
+  chassis: 'spider',
   weaponRight: 'cannon',
-  visualScale: 0.75,
+  visualScale: 0.9,
   haloColor: '#4dc0ff',
 };
 

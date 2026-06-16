@@ -25,6 +25,7 @@
 import * as THREE from 'three';
 
 import { BaseTerrain } from './BaseTerrain';
+import { applyBuildingTexture } from './buildingTextures';
 import type { BuildingStyle } from './types';
 import type { HexCoord } from '../hex/HexCoord';
 
@@ -145,6 +146,7 @@ export class Building extends BaseTerrain {
       }),
     );
     this.bodyMat = bodyMat;
+    applyBuildingTexture(bodyMat, this.style, stories);
     const trimMat = this.trackMat(
       new THREE.MeshStandardMaterial({
         color: palette.trim,
