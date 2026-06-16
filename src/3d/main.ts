@@ -89,13 +89,12 @@ import * as THREE from 'three';
 import { Stage } from './scene/Stage';
 import { IsoCamera } from './scene/IsoCamera';
 import { Board, TILE_TOP_Y } from './scene/Board';
-import { DefaultAssetLoader } from './mech/AssetLoader';
+import { getMechLoader } from './mech/getMechLoader';
 import { BasicEffects } from './fx/BasicEffects';
 import { Picker } from './Picker';
 import { Pathfinder } from './movement/Pathfinder';
 import { ATTACK_RANGE_BASE } from './mech/types';
 import type { MechAsset, ChassisType, WeaponType } from './mech/types';
-import type { PrimitiveMech } from './mech/PrimitiveMech';
 import { Stat } from './stats/Stat';
 import {
   HexCoord,
@@ -146,7 +145,7 @@ import {
 } from './items/factory';
 import { rollItem } from './items/randomItem';
 import { rollCrateTrap, type CrateTrapOutcome } from './items/crateTraps';
-import { createCrateMesh } from './items/Crate';
+import { getCrateLoader } from './items/getCrateLoader';
 import { createPlacedMineMesh, type PickupMeshHandle } from './items/PickupMesh';
 import { nukeBlastHexes, resolveNukeTrajectory } from './items/nukeBlast';
 import {
@@ -364,9 +363,9 @@ function mineAt(h: HexCoord): MineEntity | undefined {
   return mines.find((m) => hexEquals(m.tile, h));
 }
 
-function spawnCrate(tile: HexCoord): CrateEntity {
+async function spawnCrate(tile: HexCoord): Promise<CrateEntity> {
   const id = `crate-${++_crateSeq}`;
-  const mesh = createCrateMesh();
+  const mesh = await getCrateLoader().createMesh();
   const p = board.tileToWorld(tile);
   mesh.group.position.set(p.x, TILE_TOP_Y, p.z);
   stage.scene.add(mesh.group);
@@ -570,7 +569,7 @@ async function placeMech(spec: {
   const weaponRight = spec.weaponRight ?? archetype.weaponRight;
   const weaponLeft = spec.weaponLeft ?? archetype.weaponLeft;
 
-  const loader = new DefaultAssetLoader();
+  const loader = getMechLoader();
   const mech = await loader.loadMech({
     chassis,
     team: spec.team,
@@ -624,7 +623,7 @@ async function placeMech(spec: {
   };
   units.push(unit);
 
-  stage.addTicker((dt) => (mech as PrimitiveMech).tick(dt));
+  stage.addTicker((dt) => mech.tick(dt));
   return unit;
 }
 
@@ -664,11 +663,12 @@ function attachArchetypeInsignia(mechRoot: THREE.Object3D, arch: EnemyArchetype)
 /**
  * Initial crate spawn positions — provided by the active map builder.
  */
-function spawnInitialCrates(): void {
+async function spawnInitialCrates(): Promise<void> {
+  await getCrateLoader().preload();
   for (const tile of mapConfig.crateTiles) {
     if (!map.hasTile(tile)) continue;
     if (blockingTerrainAt(tile)) continue;
-    spawnCrate(tile);
+    await spawnCrate(tile);
   }
 }
 
@@ -1103,7 +1103,7 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
     }
   }
 
-  spawnInitialCrates();
+  await spawnInitialCrates();
   spawnInitialSpawnPoints();
   spawnInitialObjectives();
 

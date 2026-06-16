@@ -68,6 +68,8 @@ export interface MechAsset {
   setFacing(degrees: number): void;
   setDamageLevel(level: number): void; // 0 = full, 1 = destroyed
   playAnimation(name: AnimationName): boolean;
+  /** Per-frame update (procedural bob / glTF animation mixer). */
+  tick(dt: number): void;
   dispose(): void;
 }
 

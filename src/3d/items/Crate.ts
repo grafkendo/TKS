@@ -1,14 +1,7 @@
-// ============================================================================
-// Crate — procedural 3D mesh for a sealed supply box on the board.
+// Crate — procedural fallback mesh for supply boxes on the board.
 //
-// Contents are NOT known until the crate is opened (rolled at use time),
-// so the visual is uniform across all crates — just colored bands +
-// glowing accent stripe that bobs gently and pulses, drawing the eye.
-//
-// Same lifecycle pattern as PickupMesh: returns a handle with `tick(t)`
-// and `dispose()`. Caller owns adding the group to the scene and removing
-// it on cleanup.
-// ============================================================================
+// Primary visuals use TexturedCrate.ts (single box + albedo PNG).
+// This multi-part procedural mesh remains as a fallback if the texture fails.
 
 import * as THREE from 'three';
 import type { PickupMeshHandle } from './PickupMesh';
@@ -17,7 +10,8 @@ const WOOD_COLOR = '#a07a4a';
 const BAND_COLOR = '#3a2818';
 const ACCENT_COLOR = '#ffce4d';
 
-export function createCrateMesh(): PickupMeshHandle {
+/** Procedural fallback when the glTF ammo crate is unavailable. */
+export function createPrimitiveCrateMesh(): PickupMeshHandle {
   const group = new THREE.Group();
 
   const geometries: THREE.BufferGeometry[] = [];
