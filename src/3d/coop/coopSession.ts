@@ -4,14 +4,19 @@
 
 import type { ChassisKind, CoopAction, CoopGameState, CoopServerMessage } from '../coop/types';
 import { CoopNetClient } from '../net/CoopNetClient';
+import { enqueueCoopEvents, enqueueCoopState } from './coopPlayback';
+import { setupCoopInviteLink } from './coopInviteUi';
+import { MECH_CARD_STATS, renderMechPreview } from './mechSelectPreview';
+import { sanitizeRoomId, sanitizePlayerName } from './coopUrls';
 
 export interface CoopParams {
   roomId: string;
   playerName: string;
+  mapId: string;
 }
 
 export interface CoopMainBridge {
-  applyServerState: (state: CoopGameState) => void | Promise<void>;
+  applyServerState: (state: CoopGameState) => void;
   onEvents?: (events: CoopServerMessage extends { type: 'events'; events: infer E } ? E : never) => void;
   setStatus: (text: string) => void;
 }
@@ -30,9 +35,10 @@ let localMechPick: ChassisKind[] = [];
 export function parseCoopParams(): CoopParams | null {
   const params = new URLSearchParams(window.location.search);
   if (params.get('coop') !== '1') return null;
-  const roomId = (params.get('room') ?? 'squad').slice(0, 32);
-  const playerName = (params.get('name') ?? 'Guest').slice(0, 24);
-  return { roomId, playerName };
+  const roomId = sanitizeRoomId(params.get('room') ?? 'squad');
+  const playerName = sanitizePlayerName(params.get('name') ?? 'Guest');
+  const mapId = (params.get('map') ?? 'quadrants').slice(0, 32);
+  return { roomId, playerName, mapId };
 }
 
 export function isCoopActive(): boolean {
@@ -70,15 +76,31 @@ function renderMechPickButtons(): void {
 
   wrap.innerHTML = '';
   for (const chassis of CHASSIS_OPTIONS) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'coop-mech-btn';
-    btn.dataset.chassis = chassis;
     const picked = localMechPick.filter((m) => m === chassis).length;
-    btn.textContent = picked > 0 ? `${chassisLabel(chassis)} ×${picked}` : chassisLabel(chassis);
-    btn.classList.toggle('picked', picked > 0);
-    btn.addEventListener('click', () => toggleMech(chassis));
-    wrap.appendChild(btn);
+
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'coop-mech-card';
+    card.dataset.chassis = chassis;
+    card.classList.toggle('picked', picked > 0);
+
+    const canvas = document.createElement('canvas');
+    canvas.className = 'coop-mech-preview';
+    canvas.width = 140;
+    canvas.height = 100;
+    void renderMechPreview(chassis, canvas);
+
+    const title = document.createElement('span');
+    title.className = 'coop-mech-card-title';
+    title.textContent = picked > 0 ? `${chassisLabel(chassis)} ×${picked}` : chassisLabel(chassis);
+
+    const stats = document.createElement('span');
+    stats.className = 'coop-mech-card-stats';
+    stats.textContent = MECH_CARD_STATS[chassis];
+
+    card.append(canvas, title, stats);
+    card.addEventListener('click', () => toggleMech(chassis));
+    wrap.appendChild(card);
   }
 
   if (countEl) {
@@ -134,9 +156,10 @@ export function initCoopSession(params: CoopParams, main: CoopMainBridge): void 
   if (nameInput) nameInput.value = params.playerName;
   if (lobbyEl) lobbyEl.hidden = false;
 
+  setupCoopInviteLink(params.roomId, main.setStatus);
   renderMechPickButtons();
 
-  client = new CoopNetClient(params.roomId, params.playerName, {
+  client = new CoopNetClient(params.roomId, params.playerName, params.mapId, {
     onMessage: (msg) => void handleServerMessage(msg),
     onOpen: () => main.setStatus(`Connected to room ${params.roomId}. Pick your mechs, then Ready.`),
     onClose: () => main.setStatus('Disconnected from co-op room.'),
@@ -191,7 +214,7 @@ async function handleServerMessage(msg: CoopServerMessage): Promise<void> {
     } else {
       const lobbyEl = document.getElementById('coop-lobby') as HTMLDivElement | null;
       if (lobbyEl) lobbyEl.hidden = true;
-      await bridge.applyServerState(msg.state);
+      enqueueCoopState(msg.state);
     }
     return;
   }
@@ -201,6 +224,7 @@ async function handleServerMessage(msg: CoopServerMessage): Promise<void> {
     for (const ev of msg.events) {
       if (ev.kind === 'message') bridge.setStatus(ev.text);
     }
+    return;
   }
 }
 

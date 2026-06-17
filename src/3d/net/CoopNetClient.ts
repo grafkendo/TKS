@@ -16,13 +16,14 @@ export class CoopNetClient {
   constructor(
     private readonly roomId: string,
     private readonly playerName: string,
+    private readonly mapId: string,
     private readonly handlers: NetClientHandlers,
   ) {}
 
   connect(): void {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const q = new URLSearchParams({ room: this.roomId, name: this.playerName });
+    const q = new URLSearchParams({ room: this.roomId, name: this.playerName, map: this.mapId });
     const url = `${proto}//${host}/ws3d?${q}`;
     this.ws = new WebSocket(url);
     this.ws.addEventListener('open', () => this.handlers.onOpen?.());

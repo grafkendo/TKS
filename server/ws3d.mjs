@@ -40,6 +40,7 @@ export function attachWs3d(wss) {
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
     const roomId = (url.searchParams.get('room') ?? 'default').slice(0, 32);
     const name = (url.searchParams.get('name') ?? 'Guest').slice(0, 24);
+    const mapId = (url.searchParams.get('map') ?? 'quadrants').slice(0, 32);
 
     let room = rooms.get(roomId);
     let playerId = randomUUID();
@@ -48,7 +49,7 @@ export function attachWs3d(wss) {
     if (!room) {
       const host = { id: playerId, name, slot: 0, ready: false, selectedMechs: [] };
       room = {
-        state: createLobby(roomId, host),
+        state: createLobby(roomId, host, mapId),
         clients: [],
         hostPlayerId: playerId,
       };

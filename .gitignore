@@ -11,4 +11,8 @@ server/coopEngine.js
 vite.config.ts.timestamp-*.mjs
 .vitest-cache/
 .vite/
-coverage/
+tools/assets/*.zip
+w9231*.zip
+pickup.blend
+public/assets/mechs/straznik/
+.cursor/

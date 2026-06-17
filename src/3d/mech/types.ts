@@ -15,7 +15,7 @@ import * as THREE from 'three';
 
 export type Team = 1 | 2;
 
-export type ChassisType = 'light' | 'medium' | 'heavy' | 'spider';
+export type ChassisType = 'light' | 'medium' | 'heavy' | 'spider' | 'straznik' | 'atreides';
 export type WeaponType  = 'cannon' | 'missiles' | 'beam';
 
 /** Stable, art-agnostic identifiers for where to attach effects / projectiles. */
@@ -118,6 +118,8 @@ export const CHASSIS_MOVEMENT_BONUS: Record<ChassisType, number> = {
   medium: +2,
   heavy:  +1,
   spider: +3,
+  straznik: +2,
+  atreides: +1,
 };
 
 export const CHASSIS_MOVEMENT_SOURCE = 'chassis';

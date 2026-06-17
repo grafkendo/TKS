@@ -1,18 +1,20 @@
 // ============================================================================
-// Co-op map bootstrap — playable tiles + blockers from the battlefield map.
+// Co-op map bootstrap — playable tiles + blockers from map builders.
 // ============================================================================
 
-import { buildBattlefieldMap } from '../maps/battlefield';
+import { buildMapById } from '../maps';
 import { hexKey, type HexCoord } from '../hex/HexCoord';
 import type { ChunkTerrainSpec } from '../terrain/types';
+import type { MapSpawns } from '../maps/types';
 
 export interface CoopMapData {
   mapId: string;
   tiles: string[];
   blockedTiles: string[];
-  spawns: ReturnType<typeof buildBattlefieldMap>['spawns'];
+  spawns: MapSpawns;
   spawnPointTiles: string[];
   playerSpawnTiles: string[];
+  objectiveTiles: string[];
 }
 
 function terrainBlocks(t: ChunkTerrainSpec): boolean {
@@ -20,7 +22,7 @@ function terrainBlocks(t: ChunkTerrainSpec): boolean {
 }
 
 /** South-field deploy row and neighbors for up to 6 mechs (2 players × 3). */
-function buildPlayerSpawnTiles(spawns: ReturnType<typeof buildBattlefieldMap>['spawns']): string[] {
+function buildPlayerSpawnTiles(spawns: MapSpawns): string[] {
   const seeds: HexCoord[] = [
     spawns.r1,
     spawns.r2,
@@ -41,11 +43,8 @@ function buildPlayerSpawnTiles(spawns: ReturnType<typeof buildBattlefieldMap>['s
   return out;
 }
 
-export function loadCoopMap(mapId = 'battlefield'): CoopMapData {
-  if (mapId !== 'battlefield') {
-    throw new Error(`Unknown co-op map: ${mapId}`);
-  }
-  const built = buildBattlefieldMap();
+export function loadCoopMap(mapId = 'quadrants'): CoopMapData {
+  const built = buildMapById(mapId);
   const tiles = built.map.tiles().map(hexKey);
   const blockedTiles = built.map.terrain()
     .filter(terrainBlocks)
@@ -57,5 +56,6 @@ export function loadCoopMap(mapId = 'battlefield'): CoopMapData {
     spawns: built.spawns,
     spawnPointTiles: built.spawnPointTiles.map(hexKey),
     playerSpawnTiles: buildPlayerSpawnTiles(built.spawns),
+    objectiveTiles: built.objectiveTiles.map(hexKey),
   };
 }

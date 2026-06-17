@@ -27,6 +27,17 @@ export type GameOutcome =
   | { ended: true; winner: Team }
   | { ended: true; winner: 'draw' };
 
+/** Team 1 wins when they hold every capture objective. */
+export function evaluateCaptureOutcome(
+  totalObjectives: number,
+  heldByTeam1: number,
+): GameOutcome | { ended: false } {
+  if (totalObjectives > 0 && heldByTeam1 >= totalObjectives) {
+    return { ended: true, winner: 1 };
+  }
+  return { ended: false };
+}
+
 /** A combatant is "out of the fight" for win-condition purposes. */
 export function isCombatantOut(u: CombatantSnapshot): boolean {
   return u.destroyed || u.immobilised;

@@ -23,6 +23,13 @@ export class DefaultAssetLoader implements MechAssetLoader {
     this.gltfRegistry.set(chassis, { url });
   }
 
+  /** Load template into cache without instantiating a mech. */
+  async preloadGltf(chassis: ChassisType): Promise<void> {
+    const reg = this.gltfRegistry.get(chassis);
+    if (!reg) return;
+    await this.gltfCache.get(reg.url);
+  }
+
   async loadMech(config: MechConfig): Promise<MechAsset> {
     if (config.chassis === 'spider') {
       try {
@@ -40,8 +47,8 @@ export class DefaultAssetLoader implements MechAssetLoader {
         const template = await this.gltfCache.get(reg.url);
         return await GltfMech.fromTemplate(template, config);
       } catch (err) {
-        console.warn(
-          `[AssetLoader] glTF '${reg.url}' unavailable for '${config.chassis}' — using PrimitiveMech.`,
+        console.error(
+          `[AssetLoader] glTF '${reg.url}' failed for '${config.chassis}' — using PrimitiveMech.`,
           err,
         );
       }

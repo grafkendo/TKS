@@ -39,6 +39,108 @@
       }
       .tag-v0 { background: #fff2c4; color: #6c4f00; }
       .tag-new { background: #c4ecff; color: #003a6c; }
+      .tag-coop { background: #d4f5e8; color: #0d4a32; }
+      .coop-box {
+        background: #1a232b;
+        color: #e8ecf0;
+        border-radius: 12px;
+        padding: 22px 24px;
+        margin-bottom: 14px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      }
+      .coop-box h2 {
+        margin: 0 0 6px;
+        font-size: 20px;
+        color: #ffce4d;
+      }
+      .coop-box > p {
+        margin: 0 0 16px;
+        color: #aab2bd;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .coop-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .coop-tabs button {
+        flex: 1;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: #252f38;
+        color: #aab2bd;
+        font-weight: 600;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .coop-tabs button.active {
+        background: rgba(255,206,77,0.15);
+        border-color: rgba(255,206,77,0.45);
+        color: #ffce4d;
+      }
+      .coop-panel label {
+        display: block;
+        font-size: 12px;
+        color: #8a93a0;
+        margin: 10px 0 4px;
+      }
+      .coop-panel input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: #131a21;
+        color: #e8ecf0;
+        font-size: 14px;
+      }
+      .coop-panel button.primary {
+        width: 100%;
+        margin-top: 14px;
+        padding: 12px;
+        border: none;
+        border-radius: 8px;
+        background: #3bd4a4;
+        color: #0c1116;
+        font-weight: 700;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .coop-panel button.primary:hover { filter: brightness(1.06); }
+      .coop-hint {
+        margin: 12px 0 0;
+        font-size: 12px;
+        color: #6a7785;
+        line-height: 1.45;
+      }
+      .map-box {
+        background: white;
+        border-radius: 10px;
+        padding: 20px 24px;
+        margin-bottom: 14px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      }
+      .map-box h2 { margin: 0 0 4px; font-size: 19px; }
+      .map-box > p { margin: 0 0 14px; color: #555; font-size: 14px; line-height: 1.5; }
+      #map-picker { display: flex; flex-direction: column; gap: 8px; }
+      .map-option {
+        display: flex; gap: 10px; align-items: flex-start;
+        padding: 10px 12px; border-radius: 8px; border: 1px solid #e4ddd2;
+        cursor: pointer; transition: border-color 0.12s, background 0.12s;
+      }
+      .map-option:hover { border-color: #c9b896; background: #faf8f4; }
+      .map-option input { margin-top: 3px; accent-color: #3b6ee9; }
+      .map-option-body { display: flex; flex-direction: column; gap: 2px; }
+      .map-option-body strong { font-size: 14px; }
+      .map-option-body span { font-size: 12px; color: #666; line-height: 1.4; }
+      .solo-card {
+        display: block; width: 100%; text-align: left;
+        border: none; font: inherit; color: inherit;
+        cursor: pointer;
+      }
+      .solo-card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
     </style>
   </head>
   <body>
@@ -46,14 +148,44 @@
       <h1>Tackticus</h1>
       <p class="sub">Two builds, one rules engine. Pick a target:</p>
 
-      <a class="card" href="./3d/index.html">
-        <h2><span class="tag tag-new">NEW</span>3D mech demo</h2>
+      <div class="map-box">
+        <h2><span class="tag tag-new">MAP</span>Choose battlefield</h2>
+        <p>Applies to solo and co-op. Capture maps need all objectives; urban is elimination only.</p>
+        <div id="map-picker"></div>
+      </div>
+
+      <div class="coop-box">
+        <h2><span class="tag tag-coop">CO-OP</span>Play with a friend</h2>
+        <p>Two players vs AI in the same mission. Host creates a room, sends an invite link, both pick mechs in the lobby.</p>
+
+        <div class="coop-tabs">
+          <button type="button" id="coop-tab-create" class="active">Create room</button>
+          <button type="button" id="coop-tab-join">Join room</button>
+        </div>
+
+        <div id="coop-panel-create" class="coop-panel">
+          <label for="coop-host-name">Your callsign</label>
+          <input id="coop-host-name" type="text" maxlength="24" placeholder="Host" value="Host" />
+          <button type="button" id="coop-create-btn" class="primary">Create room &amp; play</button>
+          <p class="coop-hint">You'll get a room code and a copyable invite link in the lobby.</p>
+        </div>
+
+        <div id="coop-panel-join" class="coop-panel" hidden>
+          <label for="coop-join-room">Room code (from your friend)</label>
+          <input id="coop-join-room" type="text" maxlength="32" placeholder="e.g. k7m2p9" autocomplete="off" />
+          <label for="coop-join-name">Your callsign</label>
+          <input id="coop-join-name" type="text" maxlength="24" placeholder="Guest" value="Guest" />
+          <button type="button" id="coop-join-btn" class="primary">Join room</button>
+        </div>
+      </div>
+
+      <button type="button" class="card solo-card" id="solo-play-btn">
+        <h2><span class="tag tag-new">NEW</span>3D mech demo (solo)</h2>
         <p>
-          Three.js, three-quarter view, procedural low-poly mechs.
-          Build target for the new direction. Architecture supports
-          textured glTF + shader FX swap-in later.
+          Three.js tactical combat vs AI on the map selected above.
+          For co-op, use the section below.
         </p>
-      </a>
+      </button>
 
       <a class="card" href="./local/index.html">
         <h2><span class="tag tag-v0">RULES SANDBOX</span>2D hot-seat</h2>
@@ -64,5 +196,7 @@
         </p>
       </a>
     </div>
+
+    <script type="module" src="./coopLauncher.ts"></script>
   </body>
 </html>

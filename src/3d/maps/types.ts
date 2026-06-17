@@ -24,5 +24,7 @@ export interface MapBuildResult {
   objectiveTiles: HexCoord[];
   /** Iso camera zoom; larger maps need a higher value. */
   cameraZoom: number;
+  /** Optional yaw (degrees) — 0 frames a wide map along its q axis. */
+  cameraYawDeg?: number;
   displayName: string;
 }

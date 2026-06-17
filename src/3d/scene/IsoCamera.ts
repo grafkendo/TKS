@@ -93,6 +93,13 @@ export class IsoCamera {
     this.targetZoom = Math.max(2, Math.min(40, z));
   }
 
+  /** Set yaw immediately (used for map-specific framing). */
+  setYaw(degrees: number): void {
+    this.yawDeg = degrees;
+    this.targetYawDeg = degrees;
+    this.updateCameraTransform();
+  }
+
   /** Smoothly snap pitch to a named preset. */
   setView(view: CameraView): void {
     this.currentView = view;

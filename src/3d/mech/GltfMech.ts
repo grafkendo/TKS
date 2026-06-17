@@ -21,7 +21,7 @@ import {
 const TARGET_HEIGHT = 1.6;
 
 const ATTACH_NAMES: Record<AttachPoint, string[]> = {
-  rightHand: ['righthand', 'right_hand', 'muzzle_r', 'weapon_r', 'hand_r'],
+  rightHand: ['righthand', 'right_hand', 'muzzle_r', 'weapon_r', 'hand_r', 'straznikmg', 'mg', 'turret', 'atreidestankturret'],
   leftHand: ['lefthand', 'left_hand', 'muzzle_l', 'weapon_l', 'hand_l'],
   shoulderR: ['shoulderr', 'shoulder_r', 'turret_r'],
   shoulderL: ['shoulderl', 'shoulder_l', 'turret_l'],

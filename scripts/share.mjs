@@ -58,12 +58,32 @@ function lanAddresses() {
   return out;
 }
 
+function generateRoomCode(length = 6) {
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+function coopGameUrl(base, room, name) {
+  const root = base.replace(/\/$/, '');
+  const url = new URL(`${root}/3d/index.html`);
+  url.searchParams.set('coop', '1');
+  url.searchParams.set('room', room);
+  if (name) url.searchParams.set('name', name);
+  return url.toString();
+}
+
 function printLinks(publicBase) {
   const paths = [
-    { label: 'Launcher (pick 3D or 2D)', path: '/' },
-    { label: '3D mech demo', path: '/3d/index.html' },
+    { label: 'Launcher (solo or co-op)', path: '/' },
+    { label: '3D mech demo (solo)', path: '/3d/index.html' },
     { label: '2D rules sandbox', path: '/local/index.html' },
   ];
+
+  const roomCode = generateRoomCode();
 
   banner('Share these links with your friend');
   log('');
@@ -78,14 +98,14 @@ function printLinks(publicBase) {
     log('');
     log('  Same Wi‑Fi / LAN (friend on your network):');
     for (const ip of ips) {
-      log(`    http://${ip}:${PORT}/3d/index.html`);
+      log(`    http://${ip}:${PORT}/`);
     }
   }
 
   if (publicBase) {
     log('');
     log('  Internet (remote friend — send this):');
-    log(`    ${publicBase}/3d/index.html`);
+    log(`    ${publicBase}/`);
     log('');
     log('  Note: localtunnel may show a one-time “Click to continue” page.');
     log('  Your friend clicks through, then the game loads.');
@@ -94,8 +114,29 @@ function printLinks(publicBase) {
     log('  Public tunnel failed — use LAN links above, or run: npm run share:lan');
   }
 
+  banner(`Co-op (2 players vs AI) — room code: ${roomCode}`);
   log('');
-  log('  Each person gets their own solo game (vs AI). Online co-op is not wired yet.');
+  log('  Host opens the first link, picks mechs, copies invite in lobby.');
+  log('  Friend opens the second link (same room, different name).');
+  log('');
+
+  const bases = [`http://localhost:${PORT}`];
+  for (const ip of ips) bases.push(`http://${ip}:${PORT}`);
+  if (publicBase) bases.push(publicBase);
+
+  for (const base of bases) {
+    const label =
+      base.includes('localhost') ? 'This PC' :
+      base.startsWith('http://127.') ? 'This PC' :
+      publicBase && base === publicBase ? 'Internet' :
+      'LAN';
+    log(`  ${label}:`);
+    log(`    Host:   ${coopGameUrl(base, roomCode, 'Host')}`);
+    log(`    Friend: ${coopGameUrl(base, roomCode, 'Friend')}`);
+    log('');
+  }
+
+  log('  Or use the launcher → “Play with a friend” → Create / Join room.');
   log('  Press Ctrl+C here when done.');
   log('');
 }
@@ -147,8 +188,8 @@ process.on('SIGTERM', () => shutdown(0));
 async function main() {
   banner('Tackticus — local share setup');
   log('');
-  log('Step 1/3: Building static client (dist/local/)…');
-  execSync('npm run build:local', { cwd: ROOT, stdio: 'inherit' });
+  log('Step 1/3: Building client + co-op server bundle…');
+  execSync('npm run build:all', { cwd: ROOT, stdio: 'inherit' });
 
   log('');
   log(`Step 2/3: Starting server on http://0.0.0.0:${PORT} …`);

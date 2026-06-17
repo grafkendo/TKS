@@ -5,6 +5,7 @@ import {
   GRUNT,
   SCOUT,
   ARMORED,
+  TANK,
   SPAWNABLE_ENEMY_KEYS,
   SPAWN_WEIGHTS,
   rollEnemyArchetype,
@@ -34,17 +35,27 @@ describe('archetype statlines', () => {
     expect(ARMORED.armorThreshold).toBe(2);
   });
 
+  it('tank: 1 AP, 1 hex move, 3 HP, range 2, deflects sub-2 damage', () => {
+    expect(TANK.apMax).toBe(1);
+    expect(TANK.movementRange).toBe(1);
+    expect(TANK.hpMax).toBe(3);
+    expect(TANK.attackRange).toBe(2);
+    expect(TANK.armorThreshold).toBe(2);
+    expect(TANK.chassis).toBe('atreides');
+  });
+
   it('elite mirrors the original player statline', () => {
     expect(ELITE.apMax).toBe(3);
     expect(ELITE.hpMax).toBe(3);
     expect(ELITE.movementMode).toBe('per-hex');
   });
 
-  it('lookup table contains all four archetypes', () => {
+  it('lookup table contains all five archetypes', () => {
     expect(ARCHETYPES.elite).toBe(ELITE);
     expect(ARCHETYPES.grunt).toBe(GRUNT);
     expect(ARCHETYPES.scout).toBe(SCOUT);
     expect(ARCHETYPES.armored).toBe(ARMORED);
+    expect(ARCHETYPES.tank).toBe(TANK);
   });
 });
 
@@ -63,10 +74,11 @@ describe('rollEnemyArchetype', () => {
     const seen = new Set<string>();
     let i = 0;
     const rand = () => (i++ * 0.171) % 1;
-    for (let n = 0; n < 200; n++) seen.add(rollEnemyArchetype(rand).key);
+    for (let n = 0; n < 300; n++) seen.add(rollEnemyArchetype(rand).key);
     expect(seen.has('grunt')).toBe(true);
     expect(seen.has('scout')).toBe(true);
     expect(seen.has('armored')).toBe(true);
+    expect(seen.has('tank')).toBe(true);
   });
 
   it('rand=0 returns the first weighted archetype', () => {
@@ -74,21 +86,19 @@ describe('rollEnemyArchetype', () => {
   });
 
   it('roughly respects the weight ratios across 2000 deterministic rolls', () => {
-    const counts: Record<string, number> = { grunt: 0, scout: 0, armored: 0 };
+    const counts: Record<string, number> = { grunt: 0, scout: 0, armored: 0, tank: 0 };
     let i = 0;
     const rand = () => (i++ * 0.0173) % 1;
     for (let n = 0; n < 2000; n++) {
       counts[rollEnemyArchetype(rand).key]++;
     }
-    // Armored should be the LEAST common (≈10% of weights).
     expect(counts.armored).toBeLessThan(counts.grunt);
     expect(counts.armored).toBeLessThan(counts.scout);
-    // Grunt should be the most common (≈55%).
+    expect(counts.tank).toBeLessThan(counts.grunt);
     expect(counts.grunt).toBeGreaterThan(counts.scout);
-    // Sanity: armored is roughly 5-20% of rolls.
-    const armoredRatio = counts.armored / 2000;
-    expect(armoredRatio).toBeGreaterThan(0.04);
-    expect(armoredRatio).toBeLessThan(0.20);
+    const rareRatio = (counts.armored + counts.tank) / 2000;
+    expect(rareRatio).toBeGreaterThan(0.06);
+    expect(rareRatio).toBeLessThan(0.25);
   });
 });
 

@@ -70,8 +70,12 @@ function emptyPlayer(id: string, name: string, slot: number): CoopPlayer {
   return { id, name, slot, ready: false, selectedMechs: [] };
 }
 
-export function createLobby(roomId: string, host: CoopPlayer): CoopGameState {
-  const map = loadCoopMap();
+export function createLobby(
+  roomId: string,
+  host: CoopPlayer,
+  mapId = 'quadrants',
+): CoopGameState {
+  const map = loadCoopMap(mapId);
   return {
     roomId,
     mapId: map.mapId,

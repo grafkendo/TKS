@@ -89,7 +89,7 @@ import * as THREE from 'three';
 import { Stage } from './scene/Stage';
 import { IsoCamera } from './scene/IsoCamera';
 import { Board, TILE_TOP_Y } from './scene/Board';
-import { getMechLoader } from './mech/getMechLoader';
+import { getMechLoader, preloadMechGltfs } from './mech/getMechLoader';
 import { BasicEffects } from './fx/BasicEffects';
 import { Picker } from './Picker';
 import { Pathfinder } from './movement/Pathfinder';
@@ -117,7 +117,7 @@ import { buildMapFromUrl } from './maps';
 import { createTerrainFromSpec } from './terrain/factory';
 import { Rubble } from './terrain/Rubble';
 import type { TerrainPiece } from './terrain/types';
-import { evaluateOutcome, type GameOutcome } from './rules/winCondition';
+import { evaluateOutcome, evaluateCaptureOutcome, type GameOutcome } from './rules/winCondition';
 import {
   apBonusFromKills,
   killsUntilNextMilestone,
@@ -147,12 +147,14 @@ import { rollItem } from './items/randomItem';
 import { rollCrateTrap, type CrateTrapOutcome } from './items/crateTraps';
 import { getCrateLoader } from './items/getCrateLoader';
 import { preloadBuildingTextures } from './terrain/buildingTextures';
-import { preloadSpiderTexture } from './mech/spiderTextures';
+import { gameLog, logElapsed } from './debug/gameLog';
 import { createPlacedMineMesh, type PickupMeshHandle } from './items/PickupMesh';
 import { nukeBlastHexes, resolveNukeTrajectory } from './items/nukeBlast';
 import {
   ARCHETYPES,
   ELITE,
+  ENEMY_TEAM_VISUAL_SCALE,
+  PLAYER_TEAM_VISUAL_SCALE,
   rollEnemyArchetype,
   applyArmor,
   type EnemyArchetype,
@@ -170,7 +172,8 @@ import {
   coopServerState,
   coopPlayerId,
 } from './coop/coopSession';
-import type { CoopGameState, CoopItemSpec } from './coop/types';
+import type { CoopGameEvent, CoopGameState, CoopItemSpec } from './coop/types';
+import { initCoopPlayback, enqueueCoopEvents, enqueueCoopState } from './coop/coopPlayback';
 
 // ----- Tunables ------------------------------------------------------------
 
@@ -272,6 +275,9 @@ stage.setCamera(isoCam.camera);
 const mapConfig = buildMapFromUrl();
 const { map, spawns: SPAWN } = mapConfig;
 isoCam.setZoom(mapConfig.cameraZoom);
+if (mapConfig.cameraYawDeg != null) {
+  isoCam.setYaw(mapConfig.cameraYawDeg);
+}
 
 /** Zoom level when framing a selected player mech (closer than map default). */
 const SELECT_FOCUS_ZOOM_FACTOR = 0.58;
@@ -583,7 +589,8 @@ async function placeMech(spec: {
   mech.object.position.copy(pos);
   mech.object.position.y = TILE_TOP_Y + elevationAt(spec.tile);
   mech.setFacing(spec.facingDeg);
-  mech.object.scale.setScalar(archetype.visualScale);
+  const teamScale = spec.team === 2 ? ENEMY_TEAM_VISUAL_SCALE : PLAYER_TEAM_VISUAL_SCALE;
+  mech.object.scale.setScalar(archetype.visualScale * teamScale);
 
   // Insignia — a small colored marker floating above the mech head so
   // the player can tell a Grunt from a Scout at a glance.
@@ -663,8 +670,13 @@ function attachArchetypeInsignia(mechRoot: THREE.Object3D, arch: EnemyArchetype)
 }
 
 /**
- * Initial crate spawn positions — provided by the active map builder.
+ * World pickups: supply crates, enemy spawn pads, capture objectives.
  */
+async function spawnWorldPickups(): Promise<void> {
+  spawnInitialSpawnPoints();
+  spawnInitialObjectives();
+  await spawnInitialCrates();
+}
 async function spawnInitialCrates(): Promise<void> {
   await getCrateLoader().preload();
   for (const tile of mapConfig.crateTiles) {
@@ -775,6 +787,7 @@ function tryCaptureObjective(unit: Unit): void {
     );
   }
   renderTurnInfo();
+  checkWinCondition();
 }
 
 function objectivesCapturedBy(team: 1 | 2): number {
@@ -866,6 +879,12 @@ function aliveCount(team: 1 | 2): number {
  * Returns the count of new enemies dropped (for status reporting).
  */
 async function tickSpawnPoints(): Promise<number> {
+  const t0 = performance.now();
+  gameLog.info('spawn', 'tickSpawnPoints start', {
+    pads: spawnPoints.length,
+    aliveT2: aliveCount(2),
+    cap: MAX_TEAM2_ALIVE,
+  });
   let dropped = 0;
   const dropNames: string[] = [];
   let blockedByPlayer = 0;
@@ -890,6 +909,7 @@ async function tickSpawnPoints(): Promise<number> {
 
     const arch = rollEnemyArchetype();
     const id = `s${++_spawnedEnemySeq}`;
+    gameLog.info('spawn', 'placing enemy', { id, archetype: arch.key, tile: sp.tile });
     await placeMech({ id, team: 2, tile: sp.tile, facingDeg: 90, archetype: arch });
     dropped += 1;
     dropNames.push(arch.displayName);
@@ -930,6 +950,7 @@ async function tickSpawnPoints(): Promise<number> {
   if (fragments.length > 0) setStatus(fragments.join('. ') + '.');
 
   renderDashboard();
+  logElapsed('spawn', 'tickSpawnPoints end', t0, { dropped });
   return dropped;
 }
 
@@ -968,6 +989,50 @@ const teamControllers: Record<1 | 2, TeamController> = { 1: 'human', 2: 'ai' };
 /** True while the AI is processing its turn. Locks player input. */
 let aiActive = false;
 
+/** Prevents overlapping spawn/AI pipelines when End Turn is clicked mid-sequence. */
+let startOfTurnInFlight = false;
+let turnPipelineGen = 0;
+let animModeSince = 0;
+let aiModeSince = 0;
+let startOfTurnSince = 0;
+const WATCHDOG_STUCK_MS = 15_000;
+
+function debugGameState(): Record<string, unknown> {
+  return {
+    turnNumber,
+    currentTeam,
+    mode,
+    aiActive,
+    startOfTurnInFlight,
+    turnPipelineGen,
+    selectedId,
+    gameOver: gameOver !== null,
+    units: units.length,
+    aliveT1: aliveCount(1),
+    aliveT2: aliveCount(2),
+    animStuckMs: animModeSince ? Math.round(performance.now() - animModeSince) : 0,
+    aiStuckMs: aiModeSince ? Math.round(performance.now() - aiModeSince) : 0,
+  };
+}
+
+function markAnimating(why: string): void {
+  mode = 'animating';
+  animModeSince = performance.now();
+  gameLog.info('anim', 'animating start', { why, ...debugGameState() });
+}
+
+function clearAnimating(next: InteractionMode, why: string): void {
+  if (mode === 'animating') {
+    gameLog.info('anim', 'animating end', {
+      why,
+      next,
+      elapsedMs: animModeSince ? Math.round(performance.now() - animModeSince) : 0,
+    });
+    animModeSince = 0;
+  }
+  mode = next;
+}
+
 const coopParams = parseCoopParams();
 
 function applyCoopLoadout(unit: Unit, specs: CoopItemSpec[]): void {
@@ -998,10 +1063,70 @@ function applyCoopLoadout(unit: Unit, specs: CoopItemSpec[]): void {
   }
 }
 
+async function animateUnitPath(unit: Unit, path: HexCoord[]): Promise<void> {
+  if (path.length === 0) return;
+  unit.mech.playAnimation('walk');
+  for (const step of path) {
+    await animateStep(unit, step);
+    unit.tile = step;
+  }
+  unit.mech.playAnimation('idle');
+}
+
+/** Muzzle flash, beam, and impact — authoritative HP applied on state sync. */
+async function playShotVisuals(shooter: Unit, target: Unit): Promise<void> {
+  await faceAndFire(shooter, target.mech.object.position);
+  const torsoTgt = target.mech.getAttachPoint('torso');
+  if (torsoTgt) {
+    const targetWorld = new THREE.Vector3();
+    torsoTgt.getWorldPosition(targetWorld);
+    fx.impact({ position: targetWorld });
+  }
+  target.mech.playAnimation('hit');
+}
+
+async function playCoopEvent(ev: CoopGameEvent): Promise<void> {
+  switch (ev.kind) {
+    case 'moved': {
+      const unit = units.find((u) => u.id === ev.unitId);
+      if (!unit || unit.destroyed) return;
+      gameLog.info('anim', 'coop moved', { id: ev.unitId, steps: ev.path.length });
+      await animateUnitPath(unit, ev.path);
+      return;
+    }
+    case 'shot': {
+      const shooter = units.find((u) => u.id === ev.unitId);
+      const target = units.find((u) => u.id === ev.targetUnitId);
+      if (!shooter || !target || shooter.destroyed) return;
+      gameLog.info('anim', 'coop shot', { shooter: ev.unitId, target: ev.targetUnitId });
+      await playShotVisuals(shooter, target);
+      return;
+    }
+    case 'pivoted': {
+      const unit = units.find((u) => u.id === ev.unitId);
+      if (!unit || unit.destroyed) return;
+      unit.facingDeg = ev.facingDeg;
+      unit.mech.setFacing(ev.facingDeg);
+      return;
+    }
+    case 'spawned': {
+      const arch = rollEnemyArchetype();
+      const flash = createSpawnFlash(arch.haloColor);
+      const p = board.tileToWorld(ev.tile);
+      flash.group.position.set(p.x, TILE_TOP_Y, p.z);
+      stage.scene.add(flash.group);
+      activeSpawnFlashes.push(flash);
+      await delay(500);
+      return;
+    }
+  }
+}
+
 async function syncFromCoopServer(state: CoopGameState): Promise<void> {
   for (const su of state.units) {
     let u = units.find((x) => x.id === su.id);
     if (!u) {
+      if (su.destroyed) continue;
       const arch = su.team === 1 ? ELITE : ARCHETYPES.grunt;
       u = await placeMech({
         id: su.id,
@@ -1009,7 +1134,8 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
         tile: su.tile,
         facingDeg: su.facingDeg,
         archetype: arch,
-        chassis: su.chassis,
+        // Co-op server stores enemy chassis as 'medium' for stats; visuals use archetype.
+        ...(su.team === 1 ? { chassis: su.chassis } : {}),
       });
       u.ownerId = su.ownerId;
       if (su.team === 1 && su.items.length > 0) {
@@ -1017,6 +1143,7 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
       }
     }
 
+    const wasAlive = !u.destroyed;
     u.ownerId = su.ownerId;
     u.tile = { ...su.tile };
     u.ap = su.ap;
@@ -1034,7 +1161,22 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
     u.mech.object.position.set(p.x, TILE_TOP_Y + elevationAt(su.tile), p.z);
     u.mech.setFacing(su.facingDeg);
     u.mech.object.visible = !su.destroyed;
-    if (su.destroyed) u.mech.playAnimation('destroyed');
+    u.mech.setDamageLevel(
+      Math.min(1, (u.maxHp.effective - u.hp) / Math.max(1, u.maxHp.effective)),
+    );
+
+    if (wasAlive && su.destroyed) {
+      const torso = u.mech.getAttachPoint('torso');
+      if (torso) {
+        const w = new THREE.Vector3();
+        torso.getWorldPosition(w);
+        fx.explosion({ position: w, scale: 1.4 });
+      }
+      u.mech.playAnimation('destroyed');
+      sinkUnitWreckage(u);
+    } else if (su.destroyed) {
+      u.mech.playAnimation('destroyed');
+    }
   }
 
   currentTeam = state.phase === 'ai' ? 2 : 1;
@@ -1078,19 +1220,41 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
 }
 
 (async () => {
+  gameLog.info('turn', 'boot', {
+    debugConsole: gameLog.isConsoleMirror(),
+    coop: !!coopParams,
+  });
+
   await Promise.all([
     getCrateLoader().preload(),
     preloadBuildingTextures(),
-    preloadSpiderTexture(),
+    preloadMechGltfs(),
   ]);
 
   if (coopParams) {
-    spawnInitialObjectives();
-    spawnInitialSpawnPoints();
+    initCoopPlayback({
+      playEvent: playCoopEvent,
+      applyState: syncFromCoopServer,
+      setBusy: (busy) => {
+        if (busy) {
+          markAnimating('coop-playback');
+          endTurnBtn.disabled = true;
+        } else {
+          clearAnimating(selectedId ? 'selected' : 'idle', 'coop-playback-done');
+          const st = coopServerState();
+          const myPhase =
+            st?.phase === 'human' && st.activePlayerId === coopPlayerId();
+          endTurnBtn.disabled =
+            !!st?.outcome.ended || (isCoopActive() && !myPhase);
+        }
+      },
+    });
+    await spawnWorldPickups();
     setStatus('Connecting to co-op room…');
     initCoopSession(coopParams, {
       setStatus,
-      applyServerState: syncFromCoopServer,
+      applyServerState: enqueueCoopState,
+      onEvents: enqueueCoopEvents,
     });
     return;
   }
@@ -1111,14 +1275,12 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
     }
   }
 
-  await spawnInitialCrates();
-  spawnInitialSpawnPoints();
-  spawnInitialObjectives();
+  await spawnWorldPickups();
 
   renderTurnInfo();
   renderDashboard();
   const objHint = mapConfig.objectiveTiles.length > 0
-    ? ' Capture objective boxes in the city. Kills earn tech — +1 AP at 3 and 5 kills.'
+    ? ` Capture all ${mapConfig.objectiveTiles.length} objectives (one per quadrant) to win.`
     : '';
   setStatus(
     `${mapConfig.displayName}: Red team's turn. Each mech carries a nuke and repair kit.` +
@@ -1127,15 +1289,27 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
 })();
 
 function endTurn(): void {
-  if (mode === 'animating') return;
+  if (mode === 'animating') {
+    gameLog.warn('input', 'endTurn blocked: animating', debugGameState());
+    return;
+  }
   if (gameOver) return;
-  if (aiActive) return; // AI will end its own turn
+  if (aiActive) {
+    gameLog.warn('input', 'endTurn blocked: aiActive', debugGameState());
+    return;
+  }
+  if (startOfTurnInFlight) {
+    gameLog.warn('input', 'endTurn blocked: startOfTurnInFlight', debugGameState());
+    return;
+  }
   doEndTurn();
 }
 
 /** Internal — the actual turn-flip logic, callable by both UI + AI. */
 function doEndTurn(): void {
   if (gameOver) return;
+  const fromTeam = currentTeam;
+  gameLog.info('turn', 'doEndTurn', { fromTeam, ...debugGameState() });
   if (isCoopActive()) {
     sendCoopAction({ kind: 'endPhase' });
     return;
@@ -1192,6 +1366,11 @@ function doEndTurn(): void {
   // Start-of-turn pipeline (spawn → AI). Always async so we don't block
   // the click handler.
   void runStartOfTurn();
+  gameLog.info('turn', 'doEndTurn complete — pipeline scheduled', {
+    team: currentTeam,
+    turnNumber,
+    ...debugGameState(),
+  });
 }
 
 /**
@@ -1200,13 +1379,39 @@ function doEndTurn(): void {
  * the active team is computer-controlled.
  */
 async function runStartOfTurn(): Promise<void> {
-  if (isCoopActive()) return;
-  if (currentTeam === 2) {
-    await tickSpawnPoints();
-    if (gameOver) return;
+  if (startOfTurnInFlight) {
+    gameLog.warn('pipeline', 'runStartOfTurn skipped — already in flight', debugGameState());
+    return;
   }
-  if (teamControllers[currentTeam] === 'ai') {
-    await runAiTurn();
+
+  const gen = ++turnPipelineGen;
+  const t0 = performance.now();
+  startOfTurnInFlight = true;
+  startOfTurnSince = t0;
+  gameLog.info('turn', 'runStartOfTurn start', { gen, ...debugGameState() });
+
+  try {
+    if (isCoopActive()) return;
+    if (currentTeam === 2) {
+      const dropped = await tickSpawnPoints();
+      logElapsed('spawn', 'tickSpawnPoints', t0, { gen, dropped });
+      if (gameOver) return;
+    }
+    if (teamControllers[currentTeam] === 'ai') {
+      await runAiTurn();
+      logElapsed('ai', 'runAiTurn', t0, { gen });
+    }
+  } catch (err) {
+    gameLog.error('pipeline', 'runStartOfTurn threw', { gen, err: String(err) });
+    aiActive = false;
+    aiModeSince = 0;
+    if (mode === 'animating') mode = 'idle';
+    animModeSince = 0;
+    console.error(err);
+  } finally {
+    startOfTurnInFlight = false;
+    startOfTurnSince = 0;
+    logElapsed('turn', 'runStartOfTurn end', t0, { gen });
   }
 }
 endTurnBtn.addEventListener('click', endTurn);
@@ -1285,7 +1490,23 @@ function releaseUnit(u: Unit): void {
  * input by setting `gameOver` and render the victory banner.
  */
 function checkWinCondition(): void {
-  if (gameOver) return; // already over — don't flip-flop on later events
+  if (gameOver) return;
+
+  if (objectives.length > 0) {
+    const capture = evaluateCaptureOutcome(objectives.length, objectivesCapturedBy(1));
+    if (capture.ended) {
+      gameOver = capture;
+      endTurnBtn.disabled = true;
+      deselect();
+      board.clearAllStates();
+      hideItemCard();
+      renderGameOver();
+      renderDashboard();
+      setStatus(`Red team captures all ${objectives.length} objectives on turn ${turnNumber}!`);
+      return;
+    }
+  }
+
   const outcome = evaluateOutcome(units);
   if (!outcome.ended) return;
 
@@ -1963,43 +2184,51 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
     return;
   }
 
-  mode = 'animating';
+  markAnimating(`walkUnitTo:${unit.id}`);
   board.clearAllStates();
   const costLabel = unit.movementMode === 'burst'
     ? `1 AP / ${path.length} hex`
     : `${apCost} AP`;
   setStatus(`${describeUnit(unit)} moving (${costLabel})…`);
+  gameLog.info('anim', 'walkUnitTo start', {
+    id: unit.id,
+    steps: path.length,
+    apCost,
+    dest,
+  });
 
   unit.mech.playAnimation('walk');
 
-  // Burst-move units pay the AP up-front and the per-step deduction is
-  // skipped; per-hex units keep the existing pay-as-you-go behavior.
   if (unit.movementMode === 'burst') unit.ap -= 1;
 
-  for (const step of path) {
-    await animateStep(unit, step);
-    unit.tile = step;
-    if (unit.movementMode === 'per-hex') unit.ap -= apCostToEnter(step);
-    renderDashboard();
+  try {
+    for (const step of path) {
+      await animateStep(unit, step);
+      unit.tile = step;
+      if (unit.movementMode === 'per-hex') unit.ap -= apCostToEnter(step);
+      renderDashboard();
 
-    // Step-on effects: only mines auto-trigger. Supply crates require
-    // an explicit "open" action (1 AP) so the player can choose when
-    // to spend the AP and whether to risk a slot-full waste.
-    const killedByMine = triggerMineFor(unit);
-    if (killedByMine) break;
+      const killedByMine = triggerMineFor(unit);
+      if (killedByMine) break;
 
-    tryCaptureObjective(unit);
+      tryCaptureObjective(unit);
+    }
+  } catch (err) {
+    gameLog.error('anim', 'walkUnitTo failed', { id: unit.id, err: String(err) });
+    clearAnimating('idle', 'walkUnitTo-error');
+    throw err;
   }
 
   unit.mech.playAnimation('idle');
 
   if (unit.destroyed) {
-    mode = 'idle';
+    clearAnimating('idle', 'walkUnitTo-destroyed');
     deselect();
     return;
   }
 
-  mode = 'selected';
+  clearAnimating('selected', 'walkUnitTo-done');
+  gameLog.info('anim', 'walkUnitTo end', { id: unit.id, tile: unit.tile, ap: unit.ap });
   recomputeReachable(unit);
   refreshTileVisuals(null);
   renderDashboard();
@@ -2018,18 +2247,36 @@ function animateStep(unit: Unit, dest: HexCoord): Promise<void> {
     unit.mech.setFacing(targetYawDeg);
 
     const start = performance.now() / 1000;
-    const removeTicker = stage.addTicker(() => {
+    let removed = false;
+    let removeTicker: () => void = () => {};
+    const timeout = window.setTimeout(() => {
+      if (removed) return;
+      gameLog.error('anim', 'animateStep timeout — forcing complete', {
+        unitId: unit.id,
+        dest,
+      });
+      removed = true;
+      removeTicker();
+      unit.mech.object.position.set(toWorld.x, toY, toWorld.z);
+      resolve();
+    }, 5000);
+
+    removeTicker = stage.addTicker(() => {
       const t = Math.min(1, (performance.now() / 1000 - start) / SECONDS_PER_TILE_STEP);
       unit.mech.object.position.x = THREE.MathUtils.lerp(fromWorld.x, toWorld.x, t);
       unit.mech.object.position.z = THREE.MathUtils.lerp(fromWorld.z, toWorld.z, t);
       const arc = (fromY !== toY) ? Math.sin(t * Math.PI) * 0.08 : 0;
       unit.mech.object.position.y = THREE.MathUtils.lerp(fromY, toY, t) + arc;
       if (t >= 1) {
-        unit.mech.object.position.x = toWorld.x;
-        unit.mech.object.position.z = toWorld.z;
-        unit.mech.object.position.y = toY;
-        removeTicker();
-        resolve();
+        if (!removed) {
+          removed = true;
+          window.clearTimeout(timeout);
+          unit.mech.object.position.x = toWorld.x;
+          unit.mech.object.position.z = toWorld.z;
+          unit.mech.object.position.y = toY;
+          removeTicker();
+          resolve();
+        }
       }
     });
   });
@@ -2070,7 +2317,12 @@ function openCrate(unit: Unit, crate: CrateEntity): void {
     setStatus(`${describeUnit(unit)} is stunned — can't open crates this turn.`);
     return;
   }
-  if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
+  if (isCoopActive()) {
+    if (!canControlUnit(unit.id)) {
+      setStatus('Not your mech or sub-phase.');
+      return;
+    }
+  } else if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
     setStatus(`It's not ${teamName(unit.team)}'s turn.`);
     return;
   }
@@ -2866,10 +3118,13 @@ function faceAndFire(shooter: Unit, targetWorldPos: THREE.Vector3): Promise<void
 }
 
 function sinkUnitWreckage(target: Unit): void {
+  const isEnemy = target.team === 2;
+  const delayMs = isEnemy ? 0 : 200;
+  const sinkSec = isEnemy ? 0.25 : 0.6;
+
   setTimeout(() => {
     const sinkStart = performance.now() / 1000;
     const initialY = target.mech.object.position.y;
-    const sinkSec = 0.6;
     const removeTicker = stage.addTicker(() => {
       const elapsed = performance.now() / 1000 - sinkStart;
       const t = Math.min(1, elapsed / sinkSec);
@@ -2885,12 +3140,17 @@ function sinkUnitWreckage(target: Unit): void {
       if (t >= 1) {
         stage.scene.remove(target.mech.object);
         picker.unregisterUnit(target.id);
+        target.mech.dispose();
+        const idx = units.indexOf(target);
+        if (idx >= 0) units.splice(idx, 1);
+        if (selectedId === target.id) deselect();
         removeTicker();
         refreshAfterAction();
         renderDashboard();
+        renderTurnInfo();
       }
     });
-  }, 200);
+  }, delayMs);
 }
 
 function replaceWithRubble(terrain: TerrainPiece): void {
@@ -3102,38 +3362,47 @@ function delay(ms: number): Promise<void> {
 }
 
 async function runAiTurn(): Promise<void> {
-  if (aiActive || gameOver) return;
+  if (aiActive || gameOver) {
+    gameLog.warn('ai', 'runAiTurn skipped', debugGameState());
+    return;
+  }
   aiActive = true;
+  aiModeSince = performance.now();
   endTurnBtn.disabled = true;
   setStatus(`${teamName(currentTeam)} AI is thinking…`);
   renderDashboard();
+  gameLog.info('ai', 'runAiTurn start', debugGameState());
 
   try {
     await delay(AI_PRE_TURN_MS);
 
-    // Snapshot the team's mechs at start-of-turn; new ones can't spawn mid-turn.
     const aiUnits = units.filter(
       (u) => u.team === currentTeam && !u.destroyed,
     );
+    gameLog.info('ai', 'AI units snapshot', { count: aiUnits.length, ids: aiUnits.map((u) => u.id) });
 
     for (const mech of aiUnits) {
       if (gameOver) break;
       if (mech.destroyed || mech.immobilised) continue;
+      gameLog.info('ai', 'aiPlayMech start', { id: mech.id, ap: mech.ap });
       await aiPlayMech(mech);
+      gameLog.info('ai', 'aiPlayMech end', { id: mech.id, ap: mech.ap });
     }
   } finally {
     aiActive = false;
+    aiModeSince = 0;
     endTurnBtn.disabled = gameOver !== null;
     renderDashboard();
+    gameLog.info('ai', 'runAiTurn end', debugGameState());
   }
 
   if (gameOver) return;
   await delay(AI_THINK_MS);
+  gameLog.info('turn', 'AI invoking doEndTurn');
   doEndTurn();
 }
 
 async function aiPlayMech(mech: Unit): Promise<void> {
-  // Up to a generous step cap to guarantee termination even with bugs.
   for (let safety = 0; safety < 20; safety++) {
     if (gameOver) return;
     if (mech.destroyed || mech.immobilised) return;
@@ -3145,7 +3414,6 @@ async function aiPlayMech(mech: Unit): Promise<void> {
     const dist = hexDistance(mech.tile, target.tile);
     const range = mech.attackRange.effective;
 
-    // 1) In range, in arc (heavy), and can afford a shot → fire.
     if (
       dist <= range &&
       mech.ap >= AP_COST.shoot &&
@@ -3153,14 +3421,19 @@ async function aiPlayMech(mech: Unit): Promise<void> {
     ) {
       await delay(AI_THINK_MS);
       if (gameOver) return;
+      gameLog.info('ai', 'AI shoot', { shooter: mech.id, target: target.id });
       await fireAtUnit(mech, target);
       continue;
     }
 
-    // 2) Try to move toward the target.
     const moved = await aiTryMoveToward(mech, target);
-    if (!moved) return;
+    if (!moved) {
+      gameLog.info('ai', 'AI no useful move', { id: mech.id, ap: mech.ap });
+      return;
+    }
+    gameLog.info('ai', 'AI moved', { id: mech.id, tile: mech.tile, ap: mech.ap });
   }
+  gameLog.warn('ai', 'aiPlayMech safety cap hit', { id: mech.id });
 }
 
 function nearestEnemy(mech: Unit): Unit | null {
@@ -3319,6 +3592,12 @@ interface TackticusApi {
   setAp(unitId: string, ap: number): boolean;
   setHp(unitId: string, hp: number): boolean;
   damageTerrain(terrainId: string, amount: number): boolean;
+  /** Dump recent diagnostic log entries to the console. */
+  debugDump(max?: number): void;
+  /** Snapshot turn / mode / pipeline flags for hang diagnosis. */
+  debugState(): Record<string, unknown>;
+  /** Toggle live console mirroring of the diagnostic log. */
+  setDebugLogging(on: boolean): void;
 }
 
 type GiveItemSpec =
@@ -3560,6 +3839,17 @@ const api: TackticusApi = {
     refreshAfterAction();
     return true;
   },
+
+  debugDump(max = 80) {
+    gameLog.dump(max);
+  },
+  debugState() {
+    return debugGameState();
+  },
+  setDebugLogging(on) {
+    gameLog.setConsoleMirror(on);
+    gameLog.info('turn', `console logging ${on ? 'enabled' : 'disabled'}`);
+  },
 };
 (window as unknown as { tackticus: TackticusApi }).tackticus = api;
 
@@ -3567,6 +3857,27 @@ const api: TackticusApi = {
 
 stage.addTicker((dt) => isoCam.tick(dt));
 stage.addTicker((dt) => fx.tick(dt));
+
+// Watchdog — log if animating / AI flags stay raised unusually long.
+let lastWatchdogLog = 0;
+stage.addTicker(() => {
+  const now = performance.now();
+  if (now - lastWatchdogLog < 2000) return;
+  lastWatchdogLog = now;
+
+  if (mode === 'animating' && animModeSince > 0 && now - animModeSince > WATCHDOG_STUCK_MS) {
+    gameLog.error('watchdog', 'stuck in animating mode', debugGameState());
+    animModeSince = now;
+  }
+  if (aiActive && aiModeSince > 0 && now - aiModeSince > WATCHDOG_STUCK_MS * 2) {
+    gameLog.error('watchdog', 'stuck in aiActive', debugGameState());
+    aiModeSince = now;
+  }
+  if (startOfTurnInFlight && startOfTurnSince > 0 && now - startOfTurnSince > WATCHDOG_STUCK_MS * 2) {
+    gameLog.error('watchdog', 'stuck in startOfTurnInFlight', debugGameState());
+    startOfTurnSince = now;
+  }
+});
 
 // Crate + placed-mine animations (bob / pulse / sway).
 stage.addTicker((_dt, total) => {

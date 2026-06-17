@@ -23,7 +23,7 @@
 
 import type { ChassisType, WeaponType } from '../mech/types';
 
-export type ArchetypeKey = 'elite' | 'grunt' | 'scout' | 'armored';
+export type ArchetypeKey = 'elite' | 'grunt' | 'scout' | 'armored' | 'tank';
 export type MovementMode = 'per-hex' | 'burst';
 
 export interface EnemyArchetype {
@@ -51,6 +51,12 @@ export interface EnemyArchetype {
   haloColor: string;
 }
 
+/** Extra multiplier for team-2 mech meshes (on top of archetype visualScale). */
+export const ENEMY_TEAM_VISUAL_SCALE = 2.5;
+
+/** Player mech mesh scale (team 1). */
+export const PLAYER_TEAM_VISUAL_SCALE = 0.85;
+
 /** The original team-1 / team-2 mech statline. Player-grade — three AP, per-hex movement. */
 export const ELITE: EnemyArchetype = {
   key: 'elite',
@@ -63,7 +69,7 @@ export const ELITE: EnemyArchetype = {
   armorThreshold: 0,
   movementMode: 'per-hex',
   movementRange: 99, // effectively gated by AP
-  chassis: 'medium',
+  chassis: 'straznik',
   weaponRight: 'cannon',
   visualScale: 1.0,
   haloColor: '#ffce4d',
@@ -81,7 +87,7 @@ export const GRUNT: EnemyArchetype = {
   armorThreshold: 0,
   movementMode: 'burst',
   movementRange: 1,
-  chassis: 'spider',
+  chassis: 'straznik',
   weaponRight: 'beam',
   visualScale: 0.85,
   haloColor: '#7a8a9b',
@@ -91,7 +97,7 @@ export const GRUNT: EnemyArchetype = {
 export const SCOUT: EnemyArchetype = {
   key: 'scout',
   displayName: 'Scout',
-  description: '1 AP, dashes 2 hexes per move, 1 HP. Fast spider drone.',
+  description: '1 AP, dashes 2 hexes per move, 1 HP. Fast Straznik scout.',
   apMax: 1,
   hpMax: 1,
   damage: 1,
@@ -99,7 +105,7 @@ export const SCOUT: EnemyArchetype = {
   armorThreshold: 0,
   movementMode: 'burst',
   movementRange: 2,
-  chassis: 'spider',
+  chassis: 'straznik',
   weaponRight: 'cannon',
   visualScale: 0.9,
   haloColor: '#4dc0ff',
@@ -120,10 +126,31 @@ export const ARMORED: EnemyArchetype = {
   armorThreshold: 2,
   movementMode: 'burst',
   movementRange: 1,
-  chassis: 'heavy',
+  chassis: 'straznik',
   weaponRight: 'cannon',
-  visualScale: 0.85,
+  visualScale: 1.05,
   haloColor: '#ff5c6c',
+};
+
+/**
+ * Heavy combat tank — slow, tough, needs high-damage weapons to pierce armor.
+ * Uses the Atreides Combat Tank model.
+ */
+export const TANK: EnemyArchetype = {
+  key: 'tank',
+  displayName: 'Tank',
+  description: '1 AP, 1 hex, 3 HP, deflects damage below 2. Atreides combat tank.',
+  apMax: 1,
+  hpMax: 3,
+  damage: 1,
+  attackRange: 2,
+  armorThreshold: 2,
+  movementMode: 'burst',
+  movementRange: 1,
+  chassis: 'atreides',
+  weaponRight: 'cannon',
+  visualScale: 1.0,
+  haloColor: '#d4a44a',
 };
 
 export const ARCHETYPES: Record<ArchetypeKey, EnemyArchetype> = {
@@ -131,10 +158,13 @@ export const ARCHETYPES: Record<ArchetypeKey, EnemyArchetype> = {
   grunt: GRUNT,
   scout: SCOUT,
   armored: ARMORED,
+  tank: TANK,
 };
 
-/** The three types a spawn point can produce (excludes 'elite'). */
-export const SPAWNABLE_ENEMY_KEYS: ReadonlyArray<ArchetypeKey> = ['grunt', 'scout', 'armored'];
+/** Spawnable enemy types (excludes 'elite'). */
+export const SPAWNABLE_ENEMY_KEYS: ReadonlyArray<ArchetypeKey> = [
+  'grunt', 'scout', 'armored', 'tank',
+];
 
 /**
  * Weighted spawn table — armored is intentionally rare since it's the
@@ -142,9 +172,10 @@ export const SPAWNABLE_ENEMY_KEYS: ReadonlyArray<ArchetypeKey> = ['grunt', 'scou
  * is irrelevant.
  */
 export const SPAWN_WEIGHTS: ReadonlyArray<{ key: ArchetypeKey; weight: number }> = [
-  { key: 'grunt',   weight: 55 },
-  { key: 'scout',   weight: 35 },
-  { key: 'armored', weight: 10 },
+  { key: 'grunt',   weight: 50 },
+  { key: 'scout',   weight: 30 },
+  { key: 'armored', weight: 8 },
+  { key: 'tank',    weight: 12 },
 ];
 
 /**

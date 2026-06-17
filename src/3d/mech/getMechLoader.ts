@@ -17,3 +17,11 @@ export function getMechLoader(): DefaultAssetLoader {
   }
   return shared;
 }
+
+/** Warm the glTF cache so first enemy spawn doesn't hitch. */
+export async function preloadMechGltfs(): Promise<void> {
+  const loader = getMechLoader();
+  await Promise.allSettled(
+    (Object.keys(MECH_GLTF_PATHS) as ChassisType[]).map((chassis) => loader.preloadGltf(chassis)),
+  );
+}

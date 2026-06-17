@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   evaluateOutcome,
+  evaluateCaptureOutcome,
   isCombatantOut,
   type CombatantSnapshot,
   type Team,
@@ -120,5 +121,16 @@ describe('evaluateOutcome', () => {
         unit(2, { destroyed: true }),
       ]),
     ).toEqual({ ended: true, winner: 1 });
+  });
+});
+
+describe('evaluateCaptureOutcome', () => {
+  it('team 1 wins when all objectives are held', () => {
+    expect(evaluateCaptureOutcome(4, 4)).toEqual({ ended: true, winner: 1 });
+  });
+
+  it('not ended until every objective is taken', () => {
+    expect(evaluateCaptureOutcome(4, 3)).toEqual({ ended: false });
+    expect(evaluateCaptureOutcome(0, 0)).toEqual({ ended: false });
   });
 });
