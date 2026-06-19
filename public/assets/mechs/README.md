@@ -8,7 +8,7 @@ Drop exported `.glb` files here. The game auto-loads them by chassis name.
 | `medium.glb` | Medium chassis (leoxx300 mech model — CC-BY-4.0, see `medium_license.txt`) |
 | `heavy.glb` | Heavy chassis (W9231 Combat Mech — CC-BY-4.0, see `w9231_license.txt`) |
 | `straznik.glb` | Enemy bots — Iron Harvest Straznik (CC-BY-4.0, see `straznik_license.txt`) |
-| `atreides.glb` | Tank enemy — Atreides Combat Tank (CC-BY-4.0, see `atreides_license.txt`) |
+| `cbp0.glb` … `cbp5.glb` | Enemy archetypes — CBP 10 LP pack |
 
 If a file is missing, that chassis keeps the procedural placeholder mech.
 

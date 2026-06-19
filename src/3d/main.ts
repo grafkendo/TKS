@@ -90,7 +90,7 @@ import { updateOcclusionFade } from './scene/occlusionFade';
 import { disposeAllPreviews } from './previewLifecycle';
 import { IsoCamera } from './scene/IsoCamera';
 import { Board, TILE_TOP_Y } from './scene/Board';
-import { getMechLoader, preloadMechGltfs } from './mech/getMechLoader';
+import { getMechLoader, preloadPlayerMechGltfs } from './mech/getMechLoader';
 import { alignObjectFeetToY } from './mech/gltfNormalize';
 import { BasicEffects } from './fx/BasicEffects';
 import { Picker } from './Picker';
@@ -1264,7 +1264,7 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
   await Promise.all([
     getCrateLoader().preload(),
     preloadBuildingTextures(),
-    preloadMechGltfs(),
+    preloadPlayerMechGltfs(),
   ]);
 
   if (coopParams) {

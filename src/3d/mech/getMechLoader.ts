@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { DefaultAssetLoader } from './AssetLoader';
-import { MECH_GLTF_PATHS } from './mechAssets';
+import { BOOT_PRELOAD_CHASSIS, MECH_GLTF_PATHS } from './mechAssets';
 import type { ChassisType } from './types';
 
 let shared: DefaultAssetLoader | null = null;
@@ -18,10 +18,13 @@ export function getMechLoader(): DefaultAssetLoader {
   return shared;
 }
 
-/** Warm the glTF cache so first enemy spawn doesn't hitch. */
-export async function preloadMechGltfs(): Promise<void> {
+/** Preload player mechs at boot (lobby + first spawn). Enemy glbs load on demand. */
+export async function preloadPlayerMechGltfs(): Promise<void> {
   const loader = getMechLoader();
-  await Promise.allSettled(
-    (Object.keys(MECH_GLTF_PATHS) as ChassisType[]).map((chassis) => loader.preloadGltf(chassis)),
-  );
+  await Promise.allSettled(BOOT_PRELOAD_CHASSIS.map((chassis) => loader.preloadGltf(chassis)));
+}
+
+/** Warm a single chassis into the glTF cache (e.g. before a wave spawns). */
+export async function preloadMechGltf(chassis: ChassisType): Promise<void> {
+  await getMechLoader().preloadGltf(chassis);
 }

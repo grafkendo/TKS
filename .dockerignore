@@ -18,3 +18,28 @@ dist
 DESIGN.md
 README.md
 SELF_HOSTING.md
+
+# Local asset pipeline & archives — runtime uses packed glb in public/ only
+tools/assets
+server/assets
+uploads_files_*/
+big_brother*/
+big_brothers*/
+mech_model_medium/
+*.zip
+*.blend
+*.blend1
+
+# Unused mech source trees (packed .glb only in public/assets/mechs/)
+public/assets/mechs/needleer/
+public/assets/mechs/wasp/
+public/assets/mechs/battle_scout/
+public/assets/mechs/armor_stopper/
+public/assets/mechs/straznik/
+public/assets/mechs/needleer.glb
+public/assets/mechs/wasp.glb
+public/assets/mechs/battle_scout.glb
+public/assets/mechs/armor_stopper.glb
+public/assets/mechs/lowpoly_mech.glb
+public/assets/mechs/atreides.glb
+public/assets/mechs/atreides_license.txt

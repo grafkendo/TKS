@@ -12,22 +12,33 @@ import type { ChassisType } from './types';
  *   public/assets/mechs/medium.glb  (leoxx300 mech model — see medium_license.txt)
  *   public/assets/mechs/heavy.glb   (W9231 Combat Mech — see w9231_license.txt)
  *   public/assets/mechs/straznik.glb  (Iron Harvest Straznik — enemy bots)
- *   public/assets/mechs/atreides.glb  (Atreides Combat Tank — enemy tank)
  *   public/assets/mechs/cbp0.glb … cbp5.glb  (CBP 10 LP pack — enemy mechs)
  */
-export const MECH_GLTF_PATHS: Partial<Record<ChassisType, string>> = {
+export const PLAYER_MECH_GLTF_PATHS = {
   light: '/assets/mechs/light.glb',
   medium: '/assets/mechs/medium.glb',
   heavy: '/assets/mechs/heavy.glb',
+} as const satisfies Record<'light' | 'medium' | 'heavy', string>;
+
+export const ENEMY_MECH_GLTF_PATHS = {
   straznik: '/assets/mechs/straznik.glb',
-  atreides: '/assets/mechs/atreides.glb',
   cbp0: '/assets/mechs/cbp0.glb',
   cbp1: '/assets/mechs/cbp1.glb',
   cbp2: '/assets/mechs/cbp2.glb',
   cbp3: '/assets/mechs/cbp3.glb',
   cbp4: '/assets/mechs/cbp4.glb',
   cbp5: '/assets/mechs/cbp5.glb',
+} as const;
+
+export const MECH_GLTF_PATHS: Partial<Record<ChassisType, string>> = {
+  ...PLAYER_MECH_GLTF_PATHS,
+  ...ENEMY_MECH_GLTF_PATHS,
 };
+
+/** Player chassis preloaded at boot; enemies load on first spawn. */
+export const BOOT_PRELOAD_CHASSIS = Object.keys(PLAYER_MECH_GLTF_PATHS) as Array<
+  keyof typeof PLAYER_MECH_GLTF_PATHS
+>;
 
 /** Optional Euler correction (degrees) applied after auto-upright heuristics. */
 export interface GltfImportCorrection {
@@ -48,7 +59,6 @@ export const PLAYER_CHASSIS_HEIGHT = {
 /** Normalized heights for enemy glTF chassis (before team visual multiplier). */
 export const ENEMY_CHASSIS_HEIGHT: Partial<Record<ChassisType, number>> = {
   straznik: 1.32,
-  atreides: 0.81,
   spider: 0.95,
   cbp0: 1.0,
   cbp1: 1.0,

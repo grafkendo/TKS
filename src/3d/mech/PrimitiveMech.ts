@@ -82,14 +82,6 @@ const CHASSIS: Record<ChassisType, ChassisDims> = {
     legH: 0.80, legR: 0.18,
     totalScale: 1.0,
   },
-  atreides: {
-    torsoW: 1.20, torsoH: 0.70, torsoD: 1.10,
-    cockpitR: 0.24,
-    shoulderW: 0.18, shoulderH: 0.18,
-    armL: 0.55, armR: 0.12,
-    legH: 0.55, legR: 0.20,
-    totalScale: 1.0,
-  },
   cbp0: {
     torsoW: 0.95, torsoH: 0.80, torsoD: 0.80,
     cockpitR: 0.26,

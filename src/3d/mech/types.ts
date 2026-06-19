@@ -21,7 +21,6 @@ export type ChassisType =
   | 'heavy'
   | 'spider'
   | 'straznik'
-  | 'atreides'
   | 'cbp0'
   | 'cbp1'
   | 'cbp2'
@@ -131,7 +130,6 @@ export const CHASSIS_MOVEMENT_BONUS: Record<ChassisType, number> = {
   heavy:  +1,
   spider: +3,
   straznik: +2,
-  atreides: +1,
   cbp0: +2,
   cbp1: +2,
   cbp2: +2,

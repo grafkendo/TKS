@@ -21,7 +21,6 @@ const PREVIEW_H = 100;
 
 const PREVIEW_FIT: Partial<Record<ChassisType, number>> = {
   straznik: 1.2,
-  atreides: 1.15,
   cbp0: 1.2,
   cbp1: 1.2,
   cbp2: 1.2,
@@ -127,7 +126,6 @@ export function archetypeCardStats(key: ArchetypeKey): string {
 
 export function archetypeModelLabel(key: ArchetypeKey): string {
   const chassis = ARCHETYPES[key].chassis;
-  if (chassis === 'atreides') return 'Atreides Combat Tank';
   if (chassis === 'straznik') return 'Iron Harvest Straznik';
   if (chassis.startsWith('cbp')) return `CBP Mech ${chassis.slice(3)}`;
   return chassis;

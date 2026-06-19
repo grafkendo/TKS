@@ -14,11 +14,21 @@ vite.config.ts.timestamp-*.mjs
 tools/assets/*.zip
 w9231*.zip
 pickup.blend
+# Archived to ~/Downloads/tackticus-asset-archive — not shipped
 public/assets/mechs/straznik/
 public/assets/mechs/needleer/
 public/assets/mechs/battle_scout/
 public/assets/mechs/armor_stopper/
 public/assets/mechs/wasp/
+public/assets/mechs/needleer.glb
+public/assets/mechs/wasp.glb
+public/assets/mechs/battle_scout.glb
+public/assets/mechs/armor_stopper.glb
+public/assets/mechs/lowpoly_mech.glb
+public/assets/mechs/atreides.glb
+public/assets/mechs/atreides_license.txt
+tools/assets/atreides/
+server/assets/
 .cursor/
 # Large upstream asset drops (exported glb only in public/)
 uploads_files_*/
