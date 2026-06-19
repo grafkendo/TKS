@@ -15,4 +15,21 @@ tools/assets/*.zip
 w9231*.zip
 pickup.blend
 public/assets/mechs/straznik/
+public/assets/mechs/needleer/
+public/assets/mechs/battle_scout/
+public/assets/mechs/armor_stopper/
+public/assets/mechs/wasp/
 .cursor/
+# Large upstream asset drops (exported glb only in public/)
+uploads_files_*/
+big_brother*/
+big_brothers*/
+mech_model_medium/
+tools/blender-mcp/
+tools/blender-mcp-server/
+tools/assets/**/*.blend
+tools/assets/**/*.blend1
+/*.zip
+# Server ships packed glb only — keep gltf sources in tools/assets
+server/assets/mechs/*/
+tools/scripts/__pycache__/

@@ -135,6 +135,7 @@ export function buildUrbanMap(): MapBuildResult {
   };
 
   return {
+    mapId: 'urban',
     map: m,
     spawns,
     crateTiles: [

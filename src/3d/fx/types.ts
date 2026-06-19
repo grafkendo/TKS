@@ -30,6 +30,16 @@ export interface BeamOptions {
   thickness?: number;
 }
 
+export interface ProjectileOptions {
+  from: THREE.Vector3;
+  to: THREE.Vector3;
+  color?: string;
+  /** World-units per second along the shot line. */
+  speed?: number;
+  /** Cylinder radius in world units. */
+  thickness?: number;
+}
+
 export interface ExplosionOptions {
   position: THREE.Vector3;
   scale?: number;
@@ -44,6 +54,8 @@ export interface EffectsSystem {
   impact(opts: ImpactOptions): void;
   /** Draw a fading beam between two points (for beam weapons). */
   beam(opts: BeamOptions): void;
+  /** Animate a thick glowing bolt traveling from `from` to `to`. */
+  projectile(opts: ProjectileOptions): void;
   /** Spawn an explosion FX for destroyed units. */
   explosion(opts: ExplosionOptions): void;
   /** Frame update — animate any active FX. */

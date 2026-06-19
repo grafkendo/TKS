@@ -4,6 +4,7 @@ import { buildQuadrantsMap } from './quadrants';
 import type { MapBuildResult } from './types';
 
 export type { MapBuildResult, MapSpawns } from './types';
+export { enemiesForMap, MAP_ENEMY_ROSTER } from './mapEnemies';
 
 const MAP_BUILDERS: Record<string, () => MapBuildResult> = {
   urban: buildUrbanMap,

@@ -23,6 +23,16 @@ function isVisualEvent(ev: CoopGameEvent): boolean {
   return ev.kind === 'moved' || ev.kind === 'shot' || ev.kind === 'pivoted' || ev.kind === 'spawned';
 }
 
+/** Chain work onto the playback queue (race-free — never read `queue` twice). */
+function enqueue(task: () => Promise<void>): void {
+  queue = queue
+    .then(task)
+    .catch((err) => {
+      console.error('[coopPlayback] queue task failed', err);
+      host?.setBusy(false);
+    });
+}
+
 export function initCoopPlayback(h: CoopPlaybackHost): void {
   host = h;
 }
@@ -32,8 +42,34 @@ export function enqueueCoopEvents(events: CoopGameEvent[]): void {
   const visual = events.filter(isVisualEvent);
   if (visual.length === 0) return;
 
-  queue = queue
-    .then(async () => {
+  enqueue(async () => {
+    host!.setBusy(true);
+    try {
+      for (const ev of events) {
+        if (isVisualEvent(ev)) {
+          await host!.playEvent(ev);
+          await delay(EVENT_GAP_MS);
+        }
+      }
+    } finally {
+      host!.setBusy(false);
+    }
+  });
+}
+
+/** Apply authoritative state after any queued animations finish. */
+export function enqueueCoopState(state: CoopGameState): void {
+  if (!host) return;
+  enqueue(() => host!.applyState(state));
+}
+
+/** Events then state in one atomic queue step (preferred server payload). */
+export function enqueueCoopActionResult(events: CoopGameEvent[], state: CoopGameState): void {
+  if (!host) return;
+  const visual = events.filter(isVisualEvent);
+
+  enqueue(async () => {
+    if (visual.length > 0) {
       host!.setBusy(true);
       try {
         for (const ev of events) {
@@ -45,17 +81,7 @@ export function enqueueCoopEvents(events: CoopGameEvent[]): void {
       } finally {
         host!.setBusy(false);
       }
-    })
-    .catch((err) => {
-      console.error('[coopPlayback] event playback failed', err);
-      host?.setBusy(false);
-    });
-}
-
-/** Apply authoritative state after any queued animations finish. */
-export function enqueueCoopState(state: CoopGameState): void {
-  if (!host) return;
-  queue = queue
-    .then(() => host!.applyState(state))
-    .catch((err) => console.error('[coopPlayback] state sync failed', err));
+    }
+    await host!.applyState(state);
+  });
 }

@@ -139,3 +139,18 @@ export function makeTacticalNuke(damage = 3, name?: string): Item {
     active: { kind: 'tacticalNuke', amount: damage, apCost: 2 },
   };
 }
+
+/** Long-range guided missile — click an enemy to fire (consumable). */
+export function makeMissileLauncher(damage = 2, name?: string): Item {
+  return {
+    id: uniqueItemId('missile'),
+    kind: 'missileLauncher',
+    name: name ?? 'Missile Pod',
+    description:
+      `Lock onto an enemy (2 AP, range 5). Deals ${damage} damage — ignores forward-arc limits.`,
+    icon: '↑',
+    color: '#ff6b35',
+    slotKind: 'hand',
+    active: { kind: 'fireMissile', amount: damage, apCost: 2 },
+  };
+}

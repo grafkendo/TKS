@@ -213,6 +213,7 @@ export function buildBattlefieldMap(): MapBuildResult {
   ];
 
   return {
+    mapId: 'battlefield',
     map: m,
     spawns,
     crateTiles,

@@ -5,6 +5,8 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
+import { stripGltfTextures } from './solidMaterials';
+
 export interface GltfTemplate {
   scene: THREE.Group;
   animations: THREE.AnimationClip[];
@@ -24,6 +26,7 @@ export class GltfTemplateCache {
       job = this.loader.loadAsync(url).then((gltf) => {
         const scene = gltf.scene;
         scene.name = scene.name || 'gltf_root';
+        stripGltfTextures(scene);
         const template: GltfTemplate = { scene, animations: gltf.animations };
         this.loaded.set(url, template);
         this.pending.delete(url);

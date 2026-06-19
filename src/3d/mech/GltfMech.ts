@@ -8,6 +8,9 @@ import * as THREE from 'three';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 import type { GltfTemplate } from './gltfCache';
+import { normalizeGltfToGround } from './gltfNormalize';
+import { usesFlatEnemyPrimary } from './mechAssets';
+import { applySolidTeamMaterials } from './solidMaterials';
 import {
   AnimationName,
   AttachPoint,
@@ -16,9 +19,6 @@ import {
   TEAM_PALETTES,
   gameFacingToModelYaw,
 } from './types';
-
-/** Target standing height in world units (matches PrimitiveMech ~1.6). */
-const TARGET_HEIGHT = 1.6;
 
 const ATTACH_NAMES: Record<AttachPoint, string[]> = {
   rightHand: ['righthand', 'right_hand', 'muzzle_r', 'weapon_r', 'hand_r', 'straznikmg', 'mg', 'turret', 'atreidestankturret'],
@@ -36,12 +36,6 @@ const ANIM_NAMES: Record<AnimationName, string[]> = {
   fire: ['fire', 'shoot', 'attack'],
   hit: ['hit', 'damage', 'hurt'],
   destroyed: ['destroyed', 'death', 'die', 'dead'],
-};
-
-const TEAM_MAT_NAMES: Record<'primary' | 'secondary' | 'accent', string[]> = {
-  primary: ['teamprimary', 'primary', 'armor', 'body'],
-  secondary: ['teamsecondary', 'secondary', 'joint'],
-  accent: ['teamaccent', 'accent', 'visor', 'light'],
 };
 
 function norm(s: string): string {
@@ -64,61 +58,21 @@ function cloneScene(template: THREE.Group): THREE.Group {
   return (hasSkinned ? cloneSkinned(template) : template.clone(true)) as THREE.Group;
 }
 
-function normalizeToGround(root: THREE.Object3D, targetHeight: number): void {
-  root.updateMatrixWorld(true);
-  const box = new THREE.Box3().setFromObject(root);
-  if (box.isEmpty()) return;
-
-  const size = box.getSize(new THREE.Vector3());
-  if (size.y > 0.001) {
-    const s = targetHeight / size.y;
-    root.scale.multiplyScalar(s);
-  }
-
-  root.updateMatrixWorld(true);
-  box.setFromObject(root);
-  root.position.y -= box.min.y;
-
-  box.setFromObject(root);
-  const center = box.getCenter(new THREE.Vector3());
-  root.position.x -= center.x;
-  root.position.z -= center.z;
+function hasSkinnedMesh(root: THREE.Object3D): boolean {
+  return root.getObjectByProperty('type', 'SkinnedMesh') != null;
 }
 
-function applyTeamPalette(root: THREE.Object3D, palette: { primary: string; secondary: string; accent: string }): void {
-  const colorMap: Record<string, string> = {};
-  for (const [role, names] of Object.entries(TEAM_MAT_NAMES) as Array<
-    ['primary' | 'secondary' | 'accent', string[]]
-  >) {
-    for (const n of names) colorMap[norm(n)] = palette[role];
-  }
-
-  root.traverse((obj) => {
-    const mesh = obj as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.material) return;
-
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    for (const mat of materials) {
-      if (!(mat instanceof THREE.MeshStandardMaterial)) continue;
-      const matKey = norm(mat.name);
-      const meshKey = norm(mesh.name);
-      let hex: string | undefined;
-      for (const [key, color] of Object.entries(colorMap)) {
-        if (matKey.includes(key) || meshKey.includes(key)) {
-          hex = color;
-          break;
-        }
-      }
-      if (!hex && matKey.length === 0 && meshKey.includes('armor')) hex = palette.primary;
-      if (hex) {
-        mat.color.set(hex);
-        mat.userData.role = 'armor';
-        mat.userData.baseColor = hex;
-      }
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-    }
-  });
+/**
+ * Skinned glTF rigs (heavy mech) keep large internal bone offsets after
+ * normalizeGltfToGround. seatMechOnTile sets world position on the root, so
+ * wrap the normalized scene in an outer group we actually move in the world.
+ */
+function wrapSkinnedRoot(root: THREE.Group, config: MechConfig): THREE.Group {
+  if (!hasSkinnedMesh(root)) return root;
+  const wrapper = new THREE.Group();
+  wrapper.name = `gltf_mech_${config.chassis}_team${config.team}`;
+  wrapper.add(root);
+  return wrapper;
 }
 
 function findClip(clips: THREE.AnimationClip[], name: AnimationName): THREE.AnimationClip | null {
@@ -140,7 +94,9 @@ export class GltfMech implements MechAsset {
   private constructor(root: THREE.Group, config: MechConfig, clips: THREE.AnimationClip[]) {
     this.config = config;
     this.object = root;
-    this.object.name = `gltf_mech_${config.chassis}_team${config.team}`;
+    if (!hasSkinnedMesh(root)) {
+      this.object.name = `gltf_mech_${config.chassis}_team${config.team}`;
+    }
 
     this.resolveAttachPoints();
     this.setupAnimations(clips);
@@ -149,16 +105,17 @@ export class GltfMech implements MechAsset {
 
   static async fromTemplate(template: GltfTemplate, config: MechConfig): Promise<GltfMech> {
     const root = cloneScene(template.scene);
-    normalizeToGround(root, TARGET_HEIGHT);
+    normalizeGltfToGround(root, config.chassis);
 
     const teamDefaults = TEAM_PALETTES[config.team];
-    applyTeamPalette(root, {
+    applySolidTeamMaterials(root, {
       primary: config.colorPrimary ?? teamDefaults.primary,
       secondary: config.colorSecondary ?? teamDefaults.secondary,
       accent: config.colorAccent ?? teamDefaults.accent,
-    });
+    }, usesFlatEnemyPrimary(config.chassis) ? 'primary' : undefined);
 
-    return new GltfMech(root, config, template.animations);
+    const object = wrapSkinnedRoot(root, config);
+    return new GltfMech(object, config, template.animations);
   }
 
   getAttachPoint(name: AttachPoint): THREE.Object3D | null {

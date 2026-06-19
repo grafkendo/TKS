@@ -11,6 +11,17 @@ describe('coopUrls', () => {
     expect(url).toBe('http://127.0.0.1:5173/3d/index.html?coop=1&room=k7m2p9&name=Guest');
   });
 
+  it('builds invite URL with map when provided', () => {
+    const url = buildFriendInviteUrl(
+      'k7m2p9',
+      'http://127.0.0.1:5173/3d/index.html?coop=1&room=k7m2p9&name=Host',
+      'battlefield',
+    );
+    expect(url).toBe(
+      'http://127.0.0.1:5173/3d/index.html?coop=1&room=k7m2p9&map=battlefield&name=Friend',
+    );
+  });
+
   it('builds invite URL from lobby without double /3d/', () => {
     const url = buildFriendInviteUrl(
       'k7m2p9',

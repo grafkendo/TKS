@@ -45,22 +45,22 @@ interface PaletteEntry {
 
 const PALETTES: Record<BuildingStyle, PaletteEntry> = {
   concrete: {
-    body: 0x8d949c,
-    trim: 0x55595e,
-    window: 0x2a3742,
-    windowEmissive: 0xffce4d,
+    body: 0x9a9a9e,
+    trim: 0x6e6e74,
+    window: 0x4a4a52,
+    windowEmissive: 0x888890,
   },
   glass: {
-    body: 0x4a6f88,
-    trim: 0x223544,
-    window: 0x6fb6c8,
-    windowEmissive: 0xa8d5ff,
+    body: 0xb4b4bc,
+    trim: 0x7a7a82,
+    window: 0x6a6a74,
+    windowEmissive: 0x9a9aa4,
   },
   brick: {
-    body: 0x8b4a3a,
-    trim: 0x4a2820,
-    window: 0x2a3742,
-    windowEmissive: 0xfff2a8,
+    body: 0x8a8682,
+    trim: 0x5c5854,
+    window: 0x4a4a50,
+    windowEmissive: 0x7a7a82,
   },
 };
 

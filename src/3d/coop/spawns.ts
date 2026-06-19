@@ -4,36 +4,16 @@
 
 import { hexFromKey, hexKey } from '../hex/HexCoord';
 import { evaluateOutcome } from '../rules/winCondition';
+import { makeCoopEnemy } from './enemyFactory';
 import type { CoopActionResult, CoopGameEvent, CoopGameState, CoopUnit } from './types';
 
 const MAX_TEAM2_ALIVE = 14;
-const FACING = 90;
 
 function unitAt(units: CoopUnit[], h: { q: number; r: number }): CoopUnit | undefined {
   return units.find((u) => !u.destroyed && hexKey(u.tile) === hexKey(h));
 }
 
-function makeGrunt(id: string, tile: { q: number; r: number }): CoopUnit {
-  return {
-    id,
-    team: 2,
-    ownerId: null,
-    tile,
-    chassis: 'medium',
-    hp: 1,
-    maxHp: 1,
-    ap: 1,
-    maxAp: 1,
-    damage: 1,
-    attackRange: 1,
-    facingDeg: FACING,
-    destroyed: false,
-    techKills: 0,
-    items: [],
-  };
-}
-
-/** Spawn grunts on clear drop pads (blocked if a red mech occupies the pad). */
+/** Spawn enemies on clear drop pads (blocked if a red mech occupies the pad). */
 export function tickEnemySpawns(state: CoopGameState): CoopActionResult {
   if (state.outcome.ended || state.spawnPointTiles.length === 0) {
     return { state, events: [] };
@@ -59,7 +39,7 @@ export function tickEnemySpawns(state: CoopGameState): CoopActionResult {
     if (state.blockedTiles.includes(tileKey)) continue;
 
     const id = `b${nextEnemyId++}`;
-    units.push(makeGrunt(id, tile));
+    units.push(makeCoopEnemy(id, tile));
     dropped += 1;
     events.push({ kind: 'spawned', unitId: id, tile });
   }

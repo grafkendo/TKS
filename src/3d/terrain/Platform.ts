@@ -41,7 +41,7 @@ export class Platform extends BaseTerrain {
 
     const deckMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x5a6470,
+        color: 0x94949a,
         roughness: 0.6,
         metalness: 0.3,
         flatShading: true,
@@ -57,9 +57,9 @@ export class Platform extends BaseTerrain {
     // Glowing edge stripe so the deck "reads" as elevated even in shadow.
     const stripeMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0xffce4d,
-        emissive: new THREE.Color(0xffce4d),
-        emissiveIntensity: 0.7,
+        color: 0xaeaeb4,
+        emissive: new THREE.Color(0x888890),
+        emissiveIntensity: 0.25,
       }),
     );
     const stripeGeom = this.trackGeom(
@@ -73,7 +73,7 @@ export class Platform extends BaseTerrain {
     // Support legs (4 thin pillars from the ground up)
     const legMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x35404a,
+        color: 0x6a6a70,
         roughness: 0.8,
         flatShading: true,
       }),

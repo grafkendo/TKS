@@ -1,17 +1,20 @@
 // ============================================================================
-// Mech selection preview — tiny glTF thumbnails for the co-op lobby cards.
+// Mech selection preview — rotating solid-color glTF thumbnails for lobby cards.
 // ============================================================================
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
 import { MECH_GLTF_PATHS } from '../mech/mechAssets';
+import { normalizeGltfToGround } from '../mech/gltfNormalize';
+import { applySolidTeamMaterials, stripGltfTextures } from '../mech/solidMaterials';
+import { TEAM_PALETTES } from '../mech/types';
 import type { ChassisKind } from '../coop/types';
 
 const PREVIEW_W = 140;
 const PREVIEW_H = 100;
 
-/** Target max dimension in preview units — heavy models are scaled down more. */
 const PREVIEW_FIT: Record<ChassisKind, number> = {
   light: 1.35,
   medium: 1.35,
@@ -19,9 +22,21 @@ const PREVIEW_FIT: Record<ChassisKind, number> = {
 };
 
 const loader = new GLTFLoader();
-const cache = new Map<ChassisKind, THREE.Group>();
+const templateCache = new Map<ChassisKind, THREE.Group>();
+
+export interface MechPreviewHandle {
+  stop(): void;
+}
+
+const activePreviews = new Map<HTMLCanvasElement, MechPreviewHandle>();
+
+function clonePreviewModel(root: THREE.Group): THREE.Group {
+  const hasSkinned = root.getObjectByProperty('type', 'SkinnedMesh') != null;
+  return (hasSkinned ? cloneSkinned(root) : root.clone(true)) as THREE.Group;
+}
 
 function fitModelToPreview(root: THREE.Group, chassis: ChassisKind): void {
+  normalizeGltfToGround(root, chassis);
   root.updateMatrixWorld(true);
   const box = new THREE.Box3().setFromObject(root);
   const size = box.getSize(new THREE.Vector3());
@@ -35,35 +50,35 @@ function fitModelToPreview(root: THREE.Group, chassis: ChassisKind): void {
   root.position.z -= center.z;
 }
 
-async function loadPreviewModel(chassis: ChassisKind): Promise<THREE.Group | null> {
-  const hit = cache.get(chassis);
-  if (hit) return hit.clone(true);
+async function loadPreviewTemplate(chassis: ChassisKind): Promise<THREE.Group> {
+  const hit = templateCache.get(chassis);
+  if (hit) return clonePreviewModel(hit);
 
   const url = MECH_GLTF_PATHS[chassis];
-  if (!url) return null;
+  if (!url) throw new Error(`no preview for ${chassis}`);
 
-  try {
-    const gltf = await loader.loadAsync(url);
-    const root = gltf.scene.clone(true);
-    fitModelToPreview(root, chassis);
-    cache.set(chassis, root);
-    return root.clone(true);
-  } catch {
-    return null;
-  }
+  const gltf = await loader.loadAsync(url);
+  const root = gltf.scene;
+  stripGltfTextures(root);
+  applySolidTeamMaterials(root, TEAM_PALETTES[1], chassis === 'light' ? 'primary' : undefined);
+  fitModelToPreview(root, chassis);
+  templateCache.set(chassis, root);
+  return clonePreviewModel(root);
 }
 
 function makeFallback(chassis: ChassisKind): THREE.Group {
+  const palette = TEAM_PALETTES[1];
   const g = new THREE.Group();
+  const bodyColor = chassis === 'heavy' ? palette.primary : palette.secondary;
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 0.5, 0.5),
-    new THREE.MeshStandardMaterial({ color: chassis === 'heavy' ? '#cc4543' : '#6a8ab8' }),
+    new THREE.MeshStandardMaterial({ color: bodyColor, roughness: 0.86, metalness: 0.08 }),
   );
   body.position.y = 0.35;
   g.add(body);
   const leg = new THREE.Mesh(
     new THREE.BoxGeometry(0.2, 0.35, 0.2),
-    new THREE.MeshStandardMaterial({ color: '#333' }),
+    new THREE.MeshStandardMaterial({ color: palette.secondary, roughness: 0.86, metalness: 0.08 }),
   );
   leg.position.set(0.2, 0.15, 0);
   g.add(leg);
@@ -80,33 +95,7 @@ function frameCamera(camera: THREE.PerspectiveCamera, model: THREE.Object3D): vo
   camera.lookAt(center.x, center.y + size.y * 0.45, center.z);
 }
 
-/** Render a static preview into a canvas for lobby mech cards. */
-export async function renderMechPreview(
-  chassis: ChassisKind,
-  canvas: HTMLCanvasElement,
-): Promise<void> {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-  renderer.setSize(PREVIEW_W, PREVIEW_H, false);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(36, PREVIEW_W / PREVIEW_H, 0.1, 50);
-
-  scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-  const key = new THREE.DirectionalLight(0xffffff, 1.1);
-  key.position.set(2, 4, 3);
-  scene.add(key);
-  const rim = new THREE.DirectionalLight(0xffce4d, 0.35);
-  rim.position.set(-2, 1, -2);
-  scene.add(rim);
-
-  const model = (await loadPreviewModel(chassis)) ?? makeFallback(chassis);
-  scene.add(model);
-  frameCamera(camera, model);
-
-  renderer.render(scene, camera);
-
-  renderer.dispose();
+function disposeScene(scene: THREE.Scene): void {
   scene.traverse((o) => {
     const mesh = o as THREE.Mesh;
     mesh.geometry?.dispose();
@@ -114,6 +103,83 @@ export async function renderMechPreview(
     if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
     else mat?.dispose();
   });
+}
+
+/** Start a continuously rotating solid-color preview on a canvas. */
+export function startMechPreview(
+  chassis: ChassisKind,
+  canvas: HTMLCanvasElement,
+): MechPreviewHandle {
+  const existing = activePreviews.get(canvas);
+  existing?.stop();
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setSize(PREVIEW_W, PREVIEW_H, false);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(36, PREVIEW_W / PREVIEW_H, 0.1, 50);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const overhead = new THREE.DirectionalLight(0xffffff, 0.65);
+  overhead.position.set(0, 6, 0);
+  scene.add(overhead);
+  const key = new THREE.DirectionalLight(0xfff8f0, 1.0);
+  key.position.set(2, 4, 3);
+  scene.add(key);
+
+  const pivot = new THREE.Group();
+  scene.add(pivot);
+
+  let model: THREE.Group | null = null;
+  let running = true;
+  let rafId = 0;
+
+  void (async () => {
+    try {
+      model = await loadPreviewTemplate(chassis);
+    } catch {
+      model = makeFallback(chassis);
+    }
+    if (!running) return;
+    pivot.add(model);
+    frameCamera(camera, model);
+  })();
+
+  const tick = (): void => {
+    if (!running) return;
+    pivot.rotation.y += 0.014;
+    renderer.render(scene, camera);
+    rafId = requestAnimationFrame(tick);
+  };
+  rafId = requestAnimationFrame(tick);
+
+  const handle: MechPreviewHandle = {
+    stop() {
+      if (!running) return;
+      running = false;
+      cancelAnimationFrame(rafId);
+      activePreviews.delete(canvas);
+      renderer.dispose();
+      renderer.forceContextLoss();
+      disposeScene(scene);
+    },
+  };
+  activePreviews.set(canvas, handle);
+  return handle;
+}
+
+/** @deprecated Use startMechPreview for rotating cards. */
+export async function renderMechPreview(
+  chassis: ChassisKind,
+  canvas: HTMLCanvasElement,
+): Promise<void> {
+  startMechPreview(chassis, canvas);
+}
+
+export function stopAllMechPreviews(): void {
+  for (const handle of activePreviews.values()) handle.stop();
+  activePreviews.clear();
 }
 
 export const MECH_CARD_STATS: Record<ChassisKind, string> = {

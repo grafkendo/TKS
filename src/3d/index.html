@@ -220,19 +220,169 @@
         color: #7c8590;
         line-height: 1.4;
       }
+      .coop-lobby-layout {
+        display: flex;
+        flex-direction: row;
+        gap: 20px;
+        align-items: flex-start;
+        justify-content: center;
+        max-width: min(94vw, 880px);
+      }
+      .coop-map-preview-panel {
+        flex-shrink: 0;
+        width: 300px;
+        background: rgba(26,35,43,0.95);
+        border: 1px solid rgba(255,206,77,0.25);
+        border-radius: 12px;
+        padding: 16px 18px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+      }
+      .coop-map-preview-panel h3 {
+        margin: 0 0 10px;
+        font-size: 15px;
+        color: #ffce4d;
+      }
+      .coop-map-preview-canvas {
+        display: block;
+        width: 100%;
+        height: 220px;
+        border-radius: 8px;
+        background: linear-gradient(180deg, #2a3540 0%, #151c24 100%);
+      }
+      .coop-map-preview-desc {
+        margin: 10px 0 0;
+        font-size: 11px;
+        color: #8a93a0;
+        line-height: 1.45;
+      }
+      .map-enemy-cards-heading {
+        margin: 12px 0 8px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.45px;
+        text-transform: uppercase;
+        color: #8a93a0;
+      }
+      .map-enemy-cards-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .map-enemy-card {
+        padding: 6px 6px 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.1);
+        background: rgba(0,0,0,0.18);
+        text-align: center;
+      }
+      .map-enemy-preview {
+        width: 100%;
+        height: 72px;
+        border-radius: 6px;
+        background: linear-gradient(180deg, #2a3540 0%, #151c24 100%);
+      }
+      .map-enemy-card-title {
+        margin-top: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #7aa8ff;
+      }
+      .map-enemy-card-model {
+        font-size: 9px;
+        color: #aab2bd;
+        line-height: 1.3;
+      }
+      .map-enemy-card-stats {
+        margin-top: 3px;
+        font-size: 8.5px;
+        color: #8a93a0;
+        line-height: 1.3;
+      }
+      @media (max-width: 860px) {
+        .coop-lobby-layout {
+          flex-direction: column;
+          align-items: center;
+        }
+        .coop-map-preview-panel {
+          width: 100%;
+          max-width: 520px;
+        }
+      }
+      .coop-map-label {
+        margin: 12px 0 0;
+        font-size: 13px;
+        color: #ffce4d;
+      }
+      .coop-host-map-picker {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 10px 0 4px;
+      }
+      .coop-map-option {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.1);
+        background: rgba(0,0,0,0.2);
+        cursor: pointer;
+        font-size: 12px;
+        color: #aab2bd;
+      }
+      .coop-map-option:hover {
+        border-color: rgba(255,206,77,0.35);
+      }
+      .coop-map-option strong { display: block; color: #e8ecf0; }
+      .coop-map-option span { color: #7c8590; line-height: 1.35; }
       .stats {
-        position: absolute; top: 12px; right: 12px;
+        position: absolute; bottom: 12px; right: 12px;
         background: rgba(26,35,43,0.85); backdrop-filter: blur(8px);
         padding: 8px 12px; border-radius: 8px;
         font-family: ui-monospace, monospace; font-size: 12px;
         color: #aab2bd;
+        z-index: 11;
       }
-      .status {
-        position: absolute; bottom: 132px; left: 50%; transform: translateX(-50%);
-        background: rgba(26,35,43,0.85); backdrop-filter: blur(8px);
-        padding: 10px 18px; border-radius: 999px;
-        font-size: 13px; min-width: 200px; max-width: 70%; text-align: center;
+      .side-info-card {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: min(280px, calc(100vw - 24px));
+        background: rgba(26,35,43,0.9);
+        backdrop-filter: blur(10px);
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.07);
+        padding: 10px 12px 12px;
+        font-size: 12px;
+        color: #cfd5dd;
+        pointer-events: none;
+        z-index: 12;
       }
+      .side-info-title {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: #8a93a0;
+        margin-bottom: 8px;
+      }
+      .side-info-status {
+        line-height: 1.45;
+        color: #e8ecf0;
+        min-height: 2.8em;
+      }
+      .side-info-terrain {
+        margin-top: 10px;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255,255,255,0.08);
+        color: #aab2bd;
+        font-size: 11px;
+        line-height: 1.4;
+        min-height: 1.2em;
+      }
+      .side-info-terrain:empty { display: none; }
+      .status { display: none; }
       .dashboard {
         position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
         display: flex; gap: 10px;
@@ -475,11 +625,10 @@
 
           <h2>Enemy types</h2>
           <p style="color:#aab2bd;margin-left:8px;font-size:12px">
-            <span style="color:#7a8a9b">●</span> <b>Grunt</b> — 1 AP, 1 hex, 1 HP (common)<br/>
-            <span style="color:#4dc0ff">●</span> <b>Scout</b> — 1 AP, 2 hex dash, 1 HP<br/>
-            <span style="color:#ff5c6c">●</span> <b>Armored</b> — 1 AP, 1 hex, 2 HP, deflects dmg &lt; 2 (mega-damage required) — <i>rare</i>
+            <span style="color:#7a8a9b">●</span> <b>Grunt</b> — 1 AP, 1 hex, 1 HP (common fodder)<br/>
+            <span style="color:#d4a44a">●</span> <b>Tank</b> — 1 AP, 1 hex, 3 HP, deflects dmg &lt; 2, range 2
           </p>
-          <p style="color:#ff5c6c"><b>Orbital drop points</b> deploy one fresh enemy each enemy turn (mostly grunts &amp; scouts; armored rare).</p>
+          <p style="color:#ff5c6c"><b>Orbital drop points</b> deploy one fresh enemy each enemy turn (mostly Grunts; Tanks less often).</p>
 
           <h2>Supply crates &amp; items</h2>
           <p style="color:#ffce4d">Step onto a glowing <b>supply crate</b>, then click it to spend 1 AP and pull a random item.</p>
@@ -493,7 +642,7 @@
           <p style="color:#ffce4d">Win when the enemy team is all destroyed or immobilised.</p>
 
           <h2>Controls</h2>
-          <p><kbd>Q</kbd>/<kbd>E</kbd> rotate camera · <kbd>,</kbd>/<kbd>.</kbd> turn unit · <kbd>T</kbd> top-down · <kbd>Wheel</kbd> zoom</p>
+          <p><kbd>Q</kbd>/<kbd>E</kbd> peek-rotate camera (hold, releases back) · <kbd>,</kbd>/<kbd>.</kbd> turn unit · <kbd>Wheel</kbd> zoom</p>
 
           <div class="settings" id="settings">
             <h2 style="margin-top:0">Settings</h2>
@@ -522,6 +671,7 @@
       </div>
 
       <div id="coop-lobby" class="coop-lobby" hidden>
+        <div class="coop-lobby-layout">
         <div class="coop-panel">
           <h2>Co-op squad</h2>
           <p style="margin:0;font-size:13px;color:#aab2bd">Room <strong id="coop-room-label">—</strong> — friends vs AI. Each player runs their mechs, then the AI strikes back.</p>
@@ -531,8 +681,10 @@
               <input id="coop-invite-url" type="text" readonly aria-label="Invite link" />
               <button type="button" id="coop-copy-invite-btn">Copy link</button>
             </div>
-            <p class="coop-invite-hint">Same room code — they pick a callsign and mechs, then Ready. Host starts the mission.</p>
+            <p class="coop-invite-hint">Includes the host's map choice — they pick a callsign and mechs, then Ready. Host starts the mission.</p>
           </div>
+          <p id="coop-map-label" class="coop-map-label">Battlefield: —</p>
+          <div id="coop-host-map-picker" class="coop-host-map-picker" hidden></div>
           <label for="coop-name">Your callsign</label>
           <input id="coop-name" type="text" maxlength="24" placeholder="Guest" />
           <label>Your squad — pick 1–3 mechs (click again to remove)</label>
@@ -545,6 +697,13 @@
           </div>
           <p style="margin:12px 0 0;font-size:11px;color:#7c8590">Select mechs → Ready → host starts the mission.</p>
         </div>
+        <aside class="coop-map-preview-panel" aria-label="Selected map preview">
+          <h3 id="coop-map-preview-title">Battlefield</h3>
+          <canvas id="coop-map-preview" class="coop-map-preview-canvas" width="280" height="220"></canvas>
+          <p id="coop-map-preview-desc" class="coop-map-preview-desc"></p>
+          <div id="coop-map-enemy-cards"></div>
+        </aside>
+        </div>
       </div>
 
       <div class="turn-info">
@@ -555,7 +714,12 @@
       <div class="game-over" id="game-over" hidden></div>
 
       <div class="stats" id="stats">— FPS</div>
-      <div class="status" id="status">Select a unit</div>
+      <aside class="side-info-card" id="side-info-card" aria-live="polite">
+        <div class="side-info-title">Battle feed</div>
+        <div class="side-info-status" id="side-info-status">Select a unit</div>
+        <div class="side-info-terrain" id="side-info-terrain"></div>
+      </aside>
+      <div class="status" id="status" hidden aria-hidden="true">Select a unit</div>
       <div class="dashboard" id="dashboard"></div>
       <div class="item-card" id="item-card"></div>
       <div id="move-cost-layer"></div>

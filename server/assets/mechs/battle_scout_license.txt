@@ -1,0 +1,11 @@
+Model Information:
+* title:	Big Brothers - Battle Scout
+* source:	https://sketchfab.com/3d-models/big-brothers-battle-scout-8085a2e2d9204dedb92d22eb703c823c
+* author:	Miniatures-With-Personality (https://sketchfab.com/MiniaturesWithPersonality)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Big Brothers - Battle Scout" (https://sketchfab.com/3d-models/big-brothers-battle-scout-8085a2e2d9204dedb92d22eb703c823c) by Miniatures-With-Personality (https://sketchfab.com/MiniaturesWithPersonality) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

@@ -31,14 +31,14 @@ export class Wall extends BaseTerrain {
   private build(height: number): void {
     const bodyMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x6b6058,
+        color: 0x7a7672,
         roughness: 0.95,
         flatShading: true,
       }),
     );
     const trimMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x37322d,
+        color: 0x4e4a46,
         roughness: 0.8,
         flatShading: true,
       }),

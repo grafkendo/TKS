@@ -34,6 +34,12 @@ const solidWallTile: HexChunkTemplate = {
   terrain: [{ kind: 'solidWall', hex: { q: 0, r: 0 } }],
 };
 
+const roughTerrainTile = (hp = 2): HexChunkTemplate => ({
+  name: `rough-${hp}`,
+  hexes: [{ q: 0, r: 0 }],
+  terrain: [{ kind: 'rubble', hex: { q: 0, r: 0 }, hp }],
+});
+
 const buildingCache = new Map<string, HexChunkTemplate>();
 function building(stories: number, style: BuildingStyle, hp?: number): HexChunkTemplate {
   const key = `b-${stories}-${style}`;
@@ -114,6 +120,19 @@ export function buildQuadrantsMap(): MapBuildResult {
     if (!isCrossRoad(h)) m.placeChunk(wallTile(2), h);
   }
 
+  const roughPatches: HexCoord[] = [
+    { q: -8, r: 3 }, { q: -10, r: 2 }, { q: -7, r: 4 },
+    { q: 8, r: 3 }, { q: 10, r: 2 }, { q: 7, r: 4 },
+    { q: -8, r: -3 }, { q: -10, r: -2 }, { q: -7, r: -4 },
+    { q: 8, r: -3 }, { q: 10, r: -2 }, { q: 7, r: -4 },
+    { q: -5, r: 6 }, { q: 5, r: -6 }, { q: -6, r: -5 }, { q: 6, r: 5 },
+  ];
+  for (const h of roughPatches) {
+    if (!isCrossRoad(h) && !isRectPerimeter(h, Q_MIN, Q_MAX, R_MIN, R_MAX)) {
+      m.placeChunk(roughTerrainTile(), h);
+    }
+  }
+
   const spawns = {
     r1: { q: -3, r: 6 },
     r2: { q: 3, r: 6 },
@@ -137,14 +156,15 @@ export function buildQuadrantsMap(): MapBuildResult {
   ];
 
   const spawnPointTiles: HexCoord[] = [
-    { q: 14, r: -5 },
-    { q: -14, r: -5 },
-    { q: 14, r: 5 },
-    { q: -14, r: 5 },
-    { q: 0, r: -7 },
+    { q: 13, r: -5 },
+    { q: -13, r: -5 },
+    { q: 13, r: 5 },
+    { q: -13, r: 5 },
+    { q: 0, r: -6 },
   ];
 
   return {
+    mapId: 'quadrants',
     map: m,
     spawns,
     crateTiles,

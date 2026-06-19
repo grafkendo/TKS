@@ -9,11 +9,16 @@ import type { HexCoord } from '../hex/HexCoord';
 export interface MapSpawns {
   r1: HexCoord;
   r2: HexCoord;
+  /** Optional third red deploy tile. */
+  r3?: HexCoord;
   b1: HexCoord;
   b2: HexCoord;
+  b3?: HexCoord;
+  b4?: HexCoord;
 }
 
 export interface MapBuildResult {
+  mapId: string;
   map: HexMap;
   spawns: MapSpawns;
   /** Supply-crate spawn hexes (empty, walkable). */

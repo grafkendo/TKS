@@ -3,12 +3,21 @@
 // ============================================================================
 
 import type { CoopGameEvent, CoopGameState } from './types';
-import { applyAction, beginHumanRound } from './engine';
+import { applyAction, beginHumanRound, effectiveMaxAp, applyTechToUnit } from './engine';
 import { aiStep } from './aiSteps';
 import { tickEnemySpawns } from './spawns';
 
 export function runAiPhase(state: CoopGameState): { state: CoopGameState; events: CoopGameEvent[] } {
-  let s: CoopGameState = { ...state, phase: 'ai', activePlayerId: null };
+  let s: CoopGameState = {
+    ...state,
+    phase: 'ai',
+    activePlayerId: null,
+    units: state.units.map((u) =>
+      u.team === 2 && !u.destroyed
+        ? applyTechToUnit({ ...u, ap: effectiveMaxAp(u) })
+        : u,
+    ),
+  };
   const events: CoopGameEvent[] = [];
 
   if (s.outcome.ended) return { state: s, events };

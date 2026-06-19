@@ -7,18 +7,20 @@ import { buildFriendInviteUrl } from './coopUrls';
 export function setupCoopInviteLink(
   roomId: string,
   setStatus: (text: string) => void,
-): void {
+): { refreshInviteUrl: (mapId?: string) => void } {
   const input = document.getElementById('coop-invite-url') as HTMLInputElement | null;
   const btn = document.getElementById('coop-copy-invite-btn') as HTMLButtonElement | null;
-  if (!input || !btn) return;
+  if (!input || !btn) {
+    return { refreshInviteUrl: () => {} };
+  }
 
-  const refresh = (): void => {
-    input.value = buildFriendInviteUrl(roomId);
+  const refreshInviteUrl = (mapId?: string): void => {
+    input.value = buildFriendInviteUrl(roomId, undefined, mapId);
   };
-  refresh();
+  refreshInviteUrl();
 
   btn.addEventListener('click', async () => {
-    const url = buildFriendInviteUrl(roomId);
+    const url = input.value;
     try {
       await navigator.clipboard.writeText(url);
       setStatus('Invite link copied — send it to your friend!');
@@ -32,4 +34,6 @@ export function setupCoopInviteLink(
       setStatus('Select the link and press Ctrl+C to copy.');
     }
   });
+
+  return { refreshInviteUrl };
 }

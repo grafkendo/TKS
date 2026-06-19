@@ -1,67 +1,56 @@
 // ============================================================================
-// IsoCamera — three-quarter view orthographic camera rig.
-//
-// Standard "true isometric" (35.264° pitch) is one option; we default to a
-// slightly steeper 40° pitch which reads as 3/4-view and looks more dramatic
-// for mech combat (you see torsos and weapons rather than tops of heads).
+// IsoCamera — locked three-quarter orthographic camera rig.
 //
 // Features:
-//   - Smooth zoom via mouse wheel
-//   - Q/E to rotate around the target (snap to 90° increments by default)
-//   - T toggles between 3/4 iso view and a near-top-down "tactical map" view
-//   - Right-click drag to pan
-//
-// All driven from a (target, distance, yaw, pitch) state so any future
-// "camera shake" / "fly to" / "zoom in for shot" effects just animate those
-// fields.
+//   - Smooth pan/zoom toward focus targets
+//   - Fixed ~42° pitch (three-quarter view)
+//   - Q / E hold: ±30° peek rotation; release eases back to map default yaw
+//   - Wheel zoom within a narrow band around the map default
 // ============================================================================
 
 import * as THREE from 'three';
 
 export interface IsoCameraOptions {
-  /** Logical target world position the camera looks at. */
   target?: THREE.Vector3;
-  /** Initial zoom distance (orthographic frustum half-height in world units). */
   zoom?: number;
-  /** Pitch in degrees (above horizon). 35 = true iso. 40 = slightly steeper 3/4. */
   pitchDeg?: number;
-  /** Initial yaw in degrees (around world Y axis). */
   yawDeg?: number;
 }
 
-export type CameraView = 'iso' | 'top';
-
-const SNAP_DEG = 90;
-// Just under 90° to avoid the lookAt gimbal lock when the up vector lines
-// up with the view direction. Still reads as "looking straight down".
-const TOP_PITCH_DEG = 88;
+const PEEK_DEG = 30;
+const LOCKED_PITCH_DEG = 42;
+const ZOOM_MIN_FACTOR = 0.45;
+const ZOOM_MAX_FACTOR = 1.15;
 
 export class IsoCamera {
   readonly camera: THREE.OrthographicCamera;
 
-  private target: THREE.Vector3;
-  private zoom: number;
-  private pitchDeg: number;
-  private yawDeg: number;
-  /** Pitch the user originally configured — used as the "iso" pole. */
-  private isoPitchDeg: number;
-  private targetYawDeg: number;
-  private targetPitchDeg: number;
-  private targetZoom: number;
-  private currentView: CameraView = 'iso';
+  private target = new THREE.Vector3();
+  private targetGoal = new THREE.Vector3();
+  private zoom = 8;
+  private pitchDeg = LOCKED_PITCH_DEG;
+  private yawDeg = 45;
+  private targetYawDeg = 45;
+  private defaultYawDeg = 45;
+  private defaultZoom = 8;
+  private targetZoom = 8;
+  private peekOffsetDeg = 0;
+  private targetPeekOffsetDeg = 0;
+  private keysHeld = { q: false, e: false };
   private canvas: HTMLCanvasElement;
   private removeListeners: () => void;
 
   constructor(canvas: HTMLCanvasElement, opts: IsoCameraOptions = {}) {
     this.canvas = canvas;
-    this.target = (opts.target ?? new THREE.Vector3(0, 0, 0)).clone();
-    this.zoom = opts.zoom ?? 8;
-    this.targetZoom = this.zoom;
-    this.isoPitchDeg = opts.pitchDeg ?? 40;
-    this.pitchDeg = this.isoPitchDeg;
-    this.targetPitchDeg = this.isoPitchDeg;
-    this.yawDeg = opts.yawDeg ?? 45;
-    this.targetYawDeg = this.yawDeg;
+    this.target.copy(opts.target ?? new THREE.Vector3(0, 0.5, 0));
+    this.targetGoal.copy(this.target);
+    this.defaultZoom = opts.zoom ?? 8;
+    this.zoom = this.defaultZoom;
+    this.targetZoom = this.defaultZoom;
+    this.pitchDeg = LOCKED_PITCH_DEG;
+    this.defaultYawDeg = opts.yawDeg ?? 45;
+    this.yawDeg = this.defaultYawDeg;
+    this.targetYawDeg = this.defaultYawDeg;
 
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     this.removeListeners = this.attachInput();
@@ -69,57 +58,67 @@ export class IsoCamera {
     this.updateCameraTransform();
   }
 
-  /** Frame-update — smooth interpolation toward target yaw / pitch / zoom. */
   tick(dt: number): void {
-    const lerpRate = 1 - Math.exp(-dt * 10);
-    this.yawDeg += (this.targetYawDeg - this.yawDeg) * lerpRate;
-    this.pitchDeg += (this.targetPitchDeg - this.pitchDeg) * lerpRate;
-    this.zoom += (this.targetZoom - this.zoom) * lerpRate;
+    const posLerp = 1 - Math.exp(-dt * 9);
+    const rotLerp = 1 - Math.exp(-dt * 11);
+    const zoomLerp = 1 - Math.exp(-dt * 10);
+
+    this.target.lerp(this.targetGoal, posLerp);
+    this.peekOffsetDeg += (this.targetPeekOffsetDeg - this.peekOffsetDeg) * rotLerp;
+    this.targetYawDeg = this.defaultYawDeg + this.peekOffsetDeg;
+    this.yawDeg += (this.targetYawDeg - this.yawDeg) * rotLerp;
+    this.zoom += (this.targetZoom - this.zoom) * zoomLerp;
     this.updateCameraTransform();
   }
 
-  /** Sets the world position the camera focuses on. */
+  /** Smoothly pan toward a world focus point. */
   setTarget(t: THREE.Vector3): void {
+    this.targetGoal.copy(t);
+  }
+
+  setTargetImmediate(t: THREE.Vector3): void {
     this.target.copy(t);
+    this.targetGoal.copy(t);
     this.updateCameraTransform();
   }
 
-  /** Increment yaw to next snap. */
-  rotate(degrees: number): void {
-    this.targetYawDeg += degrees;
+  setDefaultYaw(degrees: number): void {
+    this.defaultYawDeg = degrees;
+    this.yawDeg = degrees;
+    this.targetYawDeg = degrees + this.peekOffsetDeg;
+    this.updateCameraTransform();
+  }
+
+  setDefaultZoom(z: number): void {
+    this.defaultZoom = z;
+    this.zoom = z;
+    this.targetZoom = z;
+    this.updateProjection();
+    this.updateCameraTransform();
   }
 
   setZoom(z: number): void {
-    this.targetZoom = Math.max(2, Math.min(40, z));
+    const min = this.defaultZoom * ZOOM_MIN_FACTOR;
+    const max = this.defaultZoom * ZOOM_MAX_FACTOR;
+    this.targetZoom = Math.max(min, Math.min(max, z));
   }
 
-  /** Set yaw immediately (used for map-specific framing). */
-  setYaw(degrees: number): void {
-    this.yawDeg = degrees;
-    this.targetYawDeg = degrees;
-    this.updateCameraTransform();
+  getDefaultZoom(): number {
+    return this.defaultZoom;
   }
 
-  /** Smoothly snap pitch to a named preset. */
-  setView(view: CameraView): void {
-    this.currentView = view;
-    this.targetPitchDeg = view === 'top' ? TOP_PITCH_DEG : this.isoPitchDeg;
+  /** @deprecated View is locked to three-quarter; no-op for compatibility. */
+  setView(_view: 'iso' | 'top'): void {
+    this.pitchDeg = LOCKED_PITCH_DEG;
   }
 
-  getView(): CameraView {
-    return this.currentView;
-  }
-
-  toggleView(): CameraView {
-    this.setView(this.currentView === 'iso' ? 'top' : 'iso');
-    return this.currentView;
+  toggleView(): 'iso' {
+    return 'iso';
   }
 
   dispose(): void {
     this.removeListeners();
   }
-
-  // ---------------------------------------------------------------------------
 
   private updateProjection(): void {
     const w = this.canvas.clientWidth || 1;
@@ -137,38 +136,54 @@ export class IsoCamera {
     this.updateProjection();
     const yaw = THREE.MathUtils.degToRad(this.yawDeg);
     const pitch = THREE.MathUtils.degToRad(this.pitchDeg);
-
-    // Spherical-ish: distance is large so orthographic stays "outside" the scene.
     const r = 30;
     const x = this.target.x + r * Math.cos(pitch) * Math.cos(yaw);
     const y = this.target.y + r * Math.sin(pitch);
     const z = this.target.z + r * Math.cos(pitch) * Math.sin(yaw);
-
     this.camera.position.set(x, y, z);
     this.camera.lookAt(this.target);
   }
 
-  // ---------------------------------------------------------------------------
+  private syncPeekOffset(): void {
+    if (this.keysHeld.q && !this.keysHeld.e) this.targetPeekOffsetDeg = -PEEK_DEG;
+    else if (this.keysHeld.e && !this.keysHeld.q) this.targetPeekOffsetDeg = PEEK_DEG;
+    else this.targetPeekOffsetDeg = 0;
+  }
 
   private attachInput(): () => void {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      this.setZoom(this.targetZoom + Math.sign(e.deltaY) * 1.2);
+      this.setZoom(this.targetZoom + Math.sign(e.deltaY) * 0.35);
     };
-    const onKey = (e: KeyboardEvent) => {
-      // Ignore when typing in inputs (none today, but defensive).
+    const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (e.key === 'q' || e.key === 'Q') this.rotate(-SNAP_DEG);
-      else if (e.key === 'e' || e.key === 'E') this.rotate(SNAP_DEG);
-      else if (e.key === 't' || e.key === 'T') this.toggleView();
+      if (e.key === 'q' || e.key === 'Q') {
+        if (!this.keysHeld.q) {
+          this.keysHeld.q = true;
+          this.syncPeekOffset();
+        }
+        e.preventDefault();
+      } else if (e.key === 'e' || e.key === 'E') {
+        if (!this.keysHeld.e) {
+          this.keysHeld.e = true;
+          this.syncPeekOffset();
+        }
+        e.preventDefault();
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'q' || e.key === 'Q') this.keysHeld.q = false;
+      else if (e.key === 'e' || e.key === 'E') this.keysHeld.e = false;
+      this.syncPeekOffset();
     };
     this.canvas.addEventListener('wheel', onWheel, { passive: false });
-    window.addEventListener('keydown', onKey);
-
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
     return () => {
       this.canvas.removeEventListener('wheel', onWheel);
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
     };
   }
 }

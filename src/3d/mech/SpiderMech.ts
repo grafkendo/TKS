@@ -42,15 +42,15 @@ export class SpiderMech implements MechAsset {
   private walkPhase = 0;
   private bodyMat!: THREE.MeshStandardMaterial;
 
-  private constructor(config: MechConfig, bodyTexture: THREE.Texture) {
+  private constructor(config: MechConfig) {
     this.config = config;
     this.object = new THREE.Group();
     this.object.name = `spider_${config.team}`;
-    this.build(bodyTexture);
+    this.build();
   }
 
-  static async create(config: MechConfig, bodyTexture: THREE.Texture): Promise<SpiderMech> {
-    return new SpiderMech(config, bodyTexture);
+  static async create(config: MechConfig): Promise<SpiderMech> {
+    return new SpiderMech(config);
   }
 
   getAttachPoint(name: AttachPoint): THREE.Object3D | null {
@@ -149,16 +149,14 @@ export class SpiderMech implements MechAsset {
     return m;
   }
 
-  private build(bodyTexture: THREE.Texture): void {
+  private build(): void {
     const colors = this.resolvedColors();
-    const teamTint = new THREE.Color(colors.primary);
 
     this.bodyMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        map: bodyTexture,
-        color: new THREE.Color(0xffffff).lerp(teamTint, 0.28),
-        roughness: 0.62,
-        metalness: 0.35,
+        color: new THREE.Color(colors.primary),
+        roughness: 0.86,
+        metalness: 0.08,
         flatShading: true,
       }),
     );

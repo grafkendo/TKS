@@ -14,6 +14,8 @@
 
 import * as THREE from 'three';
 
+import { SKY_BACKDROP } from './miniaturePalette';
+
 export type Ticker = (dtSec: number, totalSec: number) => void;
 
 export class Stage {
@@ -28,6 +30,7 @@ export class Stage {
   private prevTime = performance.now() / 1000;
   private startTime = this.prevTime;
   private rafId = 0;
+  private running = false;
   private resizeObserver?: ResizeObserver;
   private currentCamera?: THREE.Camera;
 
@@ -42,13 +45,13 @@ export class Stage {
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     // Future texture work: switch to ACES tone mapping once we add HDR assets.
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NoToneMapping;
 
-    this.scene.background = new THREE.Color(0x0c1116);
-    this.scene.fog = new THREE.Fog(0x0c1116, 40, 90);
+    this.scene.background = new THREE.Color(SKY_BACKDROP);
+    this.scene.fog = new THREE.Fog(SKY_BACKDROP, 38, 88);
 
     this.scene.add(this.cameraRig);
     this.addLights();
@@ -69,7 +72,10 @@ export class Stage {
   }
 
   start(): void {
+    if (this.running) return;
+    this.running = true;
     const loop = () => {
+      if (!this.running) return;
       this.rafId = requestAnimationFrame(loop);
       const now = performance.now() / 1000;
       const dt = Math.min(0.05, now - this.prevTime); // clamp to avoid huge dt on tab return
@@ -86,21 +92,34 @@ export class Stage {
   }
 
   stop(): void {
+    this.running = false;
     cancelAnimationFrame(this.rafId);
     this.resizeObserver?.disconnect();
+    this.resizeObserver = undefined;
+  }
+
+  /** Release the WebGL context (call on page unload / Vite HMR). */
+  dispose(): void {
+    this.stop();
+    this.tickers.length = 0;
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
   }
 
   // ---------------------------------------------------------------------------
   // Lighting — three-light setup tuned for low-poly flat-shaded geometry.
   // ---------------------------------------------------------------------------
   private addLights(): void {
-    // Hemisphere: sky/ground fill so shadow areas don't go pitch black.
-    const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x2a1f10, 0.55);
+    const hemi = new THREE.HemisphereLight(0xececf0, 0x8a8a92, 0.72);
     this.scene.add(hemi);
 
-    // Key directional: simulates a low sun, casts shadows.
-    const key = new THREE.DirectionalLight(0xfff1cf, 1.15);
-    key.position.set(8, 14, 6);
+    // Overhead tabletop fill — soft light from above like a desk lamp.
+    const overhead = new THREE.DirectionalLight(0xffffff, 0.55);
+    overhead.position.set(0, 22, 0);
+    this.scene.add(overhead);
+
+    const key = new THREE.DirectionalLight(0xfffaf0, 1.25);
+    key.position.set(5, 18, 4);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
     key.shadow.camera.near = 1;
@@ -113,9 +132,8 @@ export class Stage {
     key.shadow.bias = -0.0005;
     this.scene.add(key);
 
-    // Rim: cool back-light so units pop against the dark bg.
-    const rim = new THREE.DirectionalLight(0x4d6dff, 0.35);
-    rim.position.set(-6, 4, -8);
+    const rim = new THREE.DirectionalLight(0xc8ccd8, 0.28);
+    rim.position.set(-5, 6, -7);
     this.scene.add(rim);
   }
 

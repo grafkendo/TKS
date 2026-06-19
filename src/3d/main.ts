@@ -17,10 +17,8 @@
 // UNIT ARCHETYPES (see ./enemies/archetypes.ts)
 // --------------------------------------------
 //  - ELITE   : 3 AP, 3 HP, per-hex movement (1 AP / clear hex, 2 / rubble)
-//  - GRUNT   : 1 AP, 1 HP, burst-move 1 hex per action
-//  - SCOUT   : 1 AP, 1 HP, burst-move 2 hexes per action
-//  - ARMORED : 1 AP, 2 HP, burst-move 1 hex per action, ARMOR THRESHOLD 2
-//              (any single shot dealing < 2 damage is DEFLECTED → 0 damage).
+//  - GRUNT  : 1 AP, 1 HP, burst-move 1 hex per action (Straznik)
+//  - TANK   : 1 AP, 3 HP, burst-move 1 hex, ARMOR THRESHOLD 2 (Atreides tank)
 //    "Burst" movement = the whole move action costs ONE AP regardless of
 //    distance, with a per-action cap = movementRange hexes.
 //  - Allied mechs are PASSABLE: they don't block each other's paths but
@@ -87,9 +85,13 @@
 import * as THREE from 'three';
 
 import { Stage } from './scene/Stage';
+import { setUnitHighlight } from './scene/unitHighlights';
+import { updateOcclusionFade } from './scene/occlusionFade';
+import { disposeAllPreviews } from './previewLifecycle';
 import { IsoCamera } from './scene/IsoCamera';
 import { Board, TILE_TOP_Y } from './scene/Board';
 import { getMechLoader, preloadMechGltfs } from './mech/getMechLoader';
+import { alignObjectFeetToY } from './mech/gltfNormalize';
 import { BasicEffects } from './fx/BasicEffects';
 import { Picker } from './Picker';
 import { Pathfinder } from './movement/Pathfinder';
@@ -140,9 +142,13 @@ import {
   makeRepairKit,
   makeMine,
   makeDemoCharge,
-  makeDemoCharge,
   makeTacticalNuke,
+  makeMissileLauncher,
 } from './items/factory';
+import {
+  grantLightStartingMissile,
+  tickLightMissileResupply,
+} from './items/lightMissileSupply';
 import { rollItem } from './items/randomItem';
 import { rollCrateTrap, type CrateTrapOutcome } from './items/crateTraps';
 import { getCrateLoader } from './items/getCrateLoader';
@@ -169,6 +175,8 @@ import {
   isCoopActive,
   canControlUnit,
   sendCoopAction,
+  isCoopActionPending,
+  clearCoopActionPending,
   coopServerState,
   coopPlayerId,
 } from './coop/coopSession';
@@ -192,6 +200,8 @@ const RUBBLE_DEFAULT_HP = 1;
 
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
 const statusEl = document.getElementById('status') as HTMLDivElement;
+const sideInfoStatusEl = document.getElementById('side-info-status') as HTMLDivElement;
+const sideInfoTerrainEl = document.getElementById('side-info-terrain') as HTMLDivElement;
 const statsEl = document.getElementById('stats') as HTMLDivElement;
 const turnInfoEl = document.getElementById('turn-info') as HTMLDivElement;
 const endTurnBtn = document.getElementById('end-turn-btn') as HTMLButtonElement;
@@ -265,7 +275,6 @@ const stage = new Stage(canvas);
 const isoCam = new IsoCamera(canvas, {
   target: new THREE.Vector3(0, 0.5, 0),
   zoom: 8,
-  pitchDeg: 40,
   yawDeg: 35,
 });
 stage.setCamera(isoCam.camera);
@@ -274,9 +283,9 @@ stage.setCamera(isoCam.camera);
 
 const mapConfig = buildMapFromUrl();
 const { map, spawns: SPAWN } = mapConfig;
-isoCam.setZoom(mapConfig.cameraZoom);
+isoCam.setDefaultZoom(mapConfig.cameraZoom);
 if (mapConfig.cameraYawDeg != null) {
-  isoCam.setYaw(mapConfig.cameraYawDeg);
+  isoCam.setDefaultYaw(mapConfig.cameraYawDeg);
 }
 
 /** Zoom level when framing a selected player mech (closer than map default). */
@@ -308,6 +317,18 @@ function blockingTerrainAt(h: HexCoord): boolean {
 function elevationAt(h: HexCoord): number {
   const t = terrainAt(h);
   return t && t.walkable ? t.topY : 0;
+}
+
+/** Place mech feet on the tile surface after scale / facing are applied. */
+function seatMechOnTile(mech: MechAsset, tile: HexCoord): void {
+  const pos = board.tileToWorld(tile);
+  const baseY = TILE_TOP_Y + elevationAt(tile);
+  mech.object.position.set(pos.x, baseY, pos.z);
+  alignObjectFeetToY(mech.object, baseY);
+}
+
+function isWalkableSpawnTile(h: HexCoord): boolean {
+  return map.hasTile(h) && !blockingTerrainAt(h) && !unitAt(h);
 }
 
 /**
@@ -571,7 +592,11 @@ async function placeMech(spec: {
   /** Override the archetype's primary weapon. */
   weaponRight?: WeaponType;
   weaponLeft?: WeaponType;
-}): Promise<Unit> {
+}): Promise<Unit | null> {
+  if (!isWalkableSpawnTile(spec.tile)) {
+    gameLog.warn('spawn', 'blocked spawn tile', { id: spec.id, tile: spec.tile });
+    return null;
+  }
   const archetype = spec.archetype ?? ELITE;
   const chassis = spec.chassis ?? archetype.chassis;
   const weaponRight = spec.weaponRight ?? archetype.weaponRight;
@@ -586,11 +611,10 @@ async function placeMech(spec: {
   });
 
   const pos = board.tileToWorld(spec.tile);
-  mech.object.position.copy(pos);
-  mech.object.position.y = TILE_TOP_Y + elevationAt(spec.tile);
-  mech.setFacing(spec.facingDeg);
   const teamScale = spec.team === 2 ? ENEMY_TEAM_VISUAL_SCALE : PLAYER_TEAM_VISUAL_SCALE;
-  mech.object.scale.setScalar(archetype.visualScale * teamScale);
+  mech.object.scale.multiplyScalar(archetype.visualScale * teamScale);
+  mech.setFacing(spec.facingDeg);
+  seatMechOnTile(mech, spec.tile);
 
   // Insignia — a small colored marker floating above the mech head so
   // the player can tell a Grunt from a Scout at a glance.
@@ -654,7 +678,7 @@ function attachArchetypeInsignia(mechRoot: THREE.Object3D, arch: EnemyArchetype)
     roughness: 0.4,
   });
   const insignia = new THREE.Mesh(geom, mat);
-  insignia.position.set(0, 2.55, 0);
+  insignia.position.set(0, 1.35 * arch.visualScale, 0);
   insignia.userData.tackticus_insignia = true;
   insignia.userData.kind = 'insignia';
   mechRoot.add(insignia);
@@ -910,7 +934,8 @@ async function tickSpawnPoints(): Promise<number> {
     const arch = rollEnemyArchetype();
     const id = `s${++_spawnedEnemySeq}`;
     gameLog.info('spawn', 'placing enemy', { id, archetype: arch.key, tile: sp.tile });
-    await placeMech({ id, team: 2, tile: sp.tile, facingDeg: 90, archetype: arch });
+    const placed = await placeMech({ id, team: 2, tile: sp.tile, facingDeg: 90, archetype: arch });
+    if (!placed) continue;
     dropped += 1;
     dropNames.push(arch.displayName);
 
@@ -991,6 +1016,7 @@ let aiActive = false;
 
 /** Prevents overlapping spawn/AI pipelines when End Turn is clicked mid-sequence. */
 let startOfTurnInFlight = false;
+let pendingStartOfTurn = false;
 let turnPipelineGen = 0;
 let animModeSince = 0;
 let aiModeSince = 0;
@@ -1065,12 +1091,17 @@ function applyCoopLoadout(unit: Unit, specs: CoopItemSpec[]): void {
 
 async function animateUnitPath(unit: Unit, path: HexCoord[]): Promise<void> {
   if (path.length === 0) return;
-  unit.mech.playAnimation('walk');
-  for (const step of path) {
-    await animateStep(unit, step);
-    unit.tile = step;
+  setUnitHighlight(unit.mech.object, 'moving', true);
+  try {
+    unit.mech.playAnimation('walk');
+    for (const step of path) {
+      await animateStep(unit, step);
+      unit.tile = step;
+    }
+    unit.mech.playAnimation('idle');
+  } finally {
+    setUnitHighlight(unit.mech.object, 'moving', false);
   }
-  unit.mech.playAnimation('idle');
 }
 
 /** Muzzle flash, beam, and impact — authoritative HP applied on state sync. */
@@ -1127,16 +1158,19 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
     let u = units.find((x) => x.id === su.id);
     if (!u) {
       if (su.destroyed) continue;
-      const arch = su.team === 1 ? ELITE : ARCHETYPES.grunt;
+      const arch =
+        su.team === 1
+          ? ELITE
+          : (ARCHETYPES[su.archetypeKey as ArchetypeKey] ?? rollEnemyArchetype());
       u = await placeMech({
         id: su.id,
         team: su.team,
         tile: su.tile,
         facingDeg: su.facingDeg,
         archetype: arch,
-        // Co-op server stores enemy chassis as 'medium' for stats; visuals use archetype.
         ...(su.team === 1 ? { chassis: su.chassis } : {}),
       });
+      if (!u) continue;
       u.ownerId = su.ownerId;
       if (su.team === 1 && su.items.length > 0) {
         applyCoopLoadout(u, su.items);
@@ -1206,6 +1240,8 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
   }
   refreshTileVisuals(null);
 
+  clearCoopActionPending();
+
   const active = state.players.find((p) => p.id === state.activePlayerId);
   if (state.phase === 'human' && active) {
     const mine = state.activePlayerId === coopPlayerId();
@@ -1260,18 +1296,22 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
   }
 
   // Red team — elite player mechs (3 AP, per-hex movement).
-  await placeMech({ id: 'r1', team: 1, tile: SPAWN.r1, facingDeg: 270, archetype: ELITE, chassis: 'light', weaponRight: 'beam' });
+  await placeMech({ id: 'r1', team: 1, tile: SPAWN.r1, facingDeg: 270, archetype: ELITE, chassis: 'light', weaponRight: 'beam', weaponLeft: 'missiles' });
   await placeMech({ id: 'r2', team: 1, tile: SPAWN.r2, facingDeg: 270, archetype: ELITE, chassis: 'heavy', weaponRight: 'cannon', weaponLeft: 'missiles' });
-
-  // Blue team — starts with two grunts. Spawn points feed reinforcements.
-  await placeMech({ id: 'b1', team: 2, tile: SPAWN.b1, facingDeg: 90,  archetype: ARCHETYPES.grunt });
-  await placeMech({ id: 'b2', team: 2, tile: SPAWN.b2, facingDeg: 90,  archetype: ARCHETYPES.grunt });
+  await placeMech({ id: 'b1', team: 2, tile: SPAWN.b1, facingDeg: 90, archetype: rollEnemyArchetype() });
+  await placeMech({ id: 'b2', team: 2, tile: SPAWN.b2, facingDeg: 90, archetype: rollEnemyArchetype() });
 
   // Each player mech starts with a tactical nuke and one repair kit.
   for (const u of units) {
     if (u.team === 1 && u.archetypeKey === 'elite') {
       addItem(u.inventory, makeTacticalNuke());
       addItem(u.inventory, makeRepairKit(2));
+      if (u.chassis === 'light') {
+        grantLightStartingMissile(u.inventory);
+      }
+      if (u.chassis === 'heavy') {
+        addItem(u.inventory, makeMissileLauncher(2));
+      }
     }
   }
 
@@ -1279,6 +1319,7 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
 
   renderTurnInfo();
   renderDashboard();
+
   const objHint = mapConfig.objectiveTiles.length > 0
     ? ` Capture all ${mapConfig.objectiveTiles.length} objectives (one per quadrant) to win.`
     : '';
@@ -1287,6 +1328,79 @@ async function syncFromCoopServer(state: CoopGameState): Promise<void> {
     objHint,
   );
 })();
+
+/** Refill AP for every living mech on `team` at the start of their turn. */
+function refillTeamAp(team: 1 | 2): void {
+  for (const u of units) {
+    if (u.team !== team || u.destroyed) continue;
+    if (u.stunnedTurns > 0) {
+      u.ap = 0;
+      u.stunnedTurns -= 1;
+    } else {
+      u.ap = u.maxAp.effective;
+    }
+  }
+  renderDashboard();
+}
+
+/** Called after the turn flips to a new active team (solo vs AI). */
+function onActiveTeamTurnStart(team: 1 | 2): void {
+  refillTeamAp(team);
+  renderTurnInfo();
+  renderDashboard();
+  gameLog.info('turn', 'onActiveTeamTurnStart', {
+    team,
+    units: units.filter((u) => u.team === team && !u.destroyed).map((u) => ({
+      id: u.id,
+      ap: u.ap,
+      maxAp: u.maxAp.effective,
+    })),
+  });
+}
+
+/** Flip to `team`, refill AP, refresh UI. Increments turn counter when team 1 starts. */
+function activateTeamTurn(team: 1 | 2): void {
+  currentTeam = team;
+  if (team === 1) turnNumber += 1;
+
+  onActiveTeamTurnStart(team);
+
+  let lightMissileResupplied = false;
+  if (team === 1) {
+    for (const u of units) {
+      if (u.destroyed || u.chassis !== 'light') continue;
+      if (tickLightMissileResupply(u.chassis, u.team, turnNumber, u.inventory)) {
+        lightMissileResupplied = true;
+      }
+    }
+  }
+
+  if (selectedId) {
+    const sel = units.find((u) => u.id === selectedId);
+    if (!sel || sel.team !== currentTeam || sel.destroyed) {
+      deselect();
+    } else {
+      recomputeReachable(sel);
+      refreshTileVisuals(null);
+    }
+  }
+
+  renderTurnInfo();
+  renderDashboard();
+  setStatus(
+    `${teamName(currentTeam)} team's turn. Click a mech to play.` +
+    (lightMissileResupplied ? ' Light mech received a missile pod.' : ''),
+  );
+
+  checkWinCondition();
+}
+
+/** Enemy AI finished — hand control back to the human team without re-entering the pipeline. */
+function returnToPlayerTurnAfterAi(): void {
+  if (gameOver || currentTeam !== 2) return;
+  gameLog.info('turn', 'AI handoff -> team 1', debugGameState());
+  activateTeamTurn(1);
+}
 
 function endTurn(): void {
   if (mode === 'animating') {
@@ -1305,7 +1419,7 @@ function endTurn(): void {
   doEndTurn();
 }
 
-/** Internal — the actual turn-flip logic, callable by both UI + AI. */
+/** Player (or hot-seat human) ends the active team's turn. */
 function doEndTurn(): void {
   if (gameOver) return;
   const fromTeam = currentTeam;
@@ -1314,59 +1428,25 @@ function doEndTurn(): void {
     sendCoopAction({ kind: 'endPhase' });
     return;
   }
-  // Cancel any in-progress nuke targeting — you don't get to lob it
-  // across turn boundaries.
+  // Cancel any in-progress weapon targeting across turn boundaries.
   if (mode === 'nukeTargeting') {
     nukeContext = null;
     mode = selectedId ? 'selected' : 'idle';
   }
-  // Switch teams; turnNumber increments only when blue → red wraps.
-  currentTeam = currentTeam === 1 ? 2 : 1;
-  if (currentTeam === 1) turnNumber += 1;
-
-  // Refill AP for the new active team. STUNNED units burn one stun
-  // tick instead of refilling — they wake up next turn but lose this
-  // one. Immobilised units still refill (kept for symmetry if they're
-  // released later); they just can't spend AP.
-  for (const u of units) {
-    if (u.team !== currentTeam || u.destroyed) continue;
-    if (u.stunnedTurns > 0) {
-      u.ap = 0;
-      u.stunnedTurns -= 1;
-    } else {
-      u.ap = u.maxAp.effective;
-    }
+  if (mode === 'missileTargeting') {
+    missileContext = null;
+    mode = selectedId ? 'selected' : 'idle';
   }
 
-  // (Spawn + AI handoff are dispatched together at the bottom — we need
-  //  to await spawn point ticks BEFORE the AI starts so it can plan
-  //  around the new arrivals.)
-
-  // Deselect anyone whose team isn't active.
-  if (selectedId) {
-    const sel = units.find((u) => u.id === selectedId);
-    if (!sel || sel.team !== currentTeam || sel.destroyed) {
-      deselect();
-    } else {
-      // Selection survives across team-skip in edge cases; recompute.
-      recomputeReachable(sel);
-      refreshTileVisuals(null);
-    }
-  }
-
-  renderTurnInfo();
-  renderDashboard();
-  setStatus(`${teamName(currentTeam)} team's turn. Click a mech to play.`);
-
-  // Defensive: if a state change before this turn-end somehow missed the
-  // win-check (e.g. an immobilise via devtools), catch it here.
-  checkWinCondition();
+  const nextTeam: 1 | 2 = fromTeam === 1 ? 2 : 1;
+  activateTeamTurn(nextTeam);
   if (gameOver) return;
 
-  // Start-of-turn pipeline (spawn → AI). Always async so we don't block
-  // the click handler.
-  void runStartOfTurn();
-  gameLog.info('turn', 'doEndTurn complete — pipeline scheduled', {
+  // Spawn + AI only when the team that just became active is computer-controlled.
+  if (teamControllers[nextTeam] === 'ai') {
+    void runStartOfTurn();
+  }
+  gameLog.info('turn', 'doEndTurn complete', {
     team: currentTeam,
     turnNumber,
     ...debugGameState(),
@@ -1380,7 +1460,8 @@ function doEndTurn(): void {
  */
 async function runStartOfTurn(): Promise<void> {
   if (startOfTurnInFlight) {
-    gameLog.warn('pipeline', 'runStartOfTurn skipped — already in flight', debugGameState());
+    pendingStartOfTurn = true;
+    gameLog.warn('pipeline', 'runStartOfTurn queued — already in flight', debugGameState());
     return;
   }
 
@@ -1400,6 +1481,8 @@ async function runStartOfTurn(): Promise<void> {
     if (teamControllers[currentTeam] === 'ai') {
       await runAiTurn();
       logElapsed('ai', 'runAiTurn', t0, { gen });
+      if (gameOver) return;
+      returnToPlayerTurnAfterAi();
     }
   } catch (err) {
     gameLog.error('pipeline', 'runStartOfTurn threw', { gen, err: String(err) });
@@ -1412,6 +1495,10 @@ async function runStartOfTurn(): Promise<void> {
     startOfTurnInFlight = false;
     startOfTurnSince = 0;
     logElapsed('turn', 'runStartOfTurn end', t0, { gen });
+    if (pendingStartOfTurn) {
+      pendingStartOfTurn = false;
+      void runStartOfTurn();
+    }
   }
 }
 endTurnBtn.addEventListener('click', endTurn);
@@ -1544,9 +1631,15 @@ function renderGameOver(): void {
 
 // ----- Interaction state machine -------------------------------------------
 
-type InteractionMode = 'idle' | 'selected' | 'animating' | 'nukeTargeting';
+type InteractionMode = 'idle' | 'selected' | 'animating' | 'nukeTargeting' | 'missileTargeting';
+
+function isWeaponTargetingMode(): boolean {
+  return mode === 'nukeTargeting' || mode === 'missileTargeting';
+}
 
 let selectedId: string | null = null;
+/** True when an enemy is selected for inspection only (camera + stats, no orders). */
+let inspectOnly = false;
 let mode: InteractionMode = 'idle';
 
 /** Map "q_r" → AP cost to reach, set when a unit is selected. */
@@ -1567,18 +1660,52 @@ interface NukeTargetingContext {
 let nukeContext: NukeTargetingContext | null = null;
 const NUKE_RANGE = 3;
 
+interface MissileTargetingContext {
+  unit: Unit;
+  item: Item;
+  addr: SlotAddress;
+  range: number;
+}
+let missileContext: MissileTargetingContext | null = null;
+const MISSILE_RANGE = 5;
+
 picker.setEvents({
   onTileHover(tile) {
     if (mode === 'animating' || gameOver || aiActive) return;
     refreshTileVisuals(tile);
+    if (tile && board.has(tile)) {
+      setTerrainInfo(describeTileTerrain(tile));
+    } else {
+      setTerrainInfo('');
+    }
   },
 
   onUnitClick(unitId) {
     if (mode === 'animating' || gameOver || aiActive) return;
-    // Clicking anything other than a tile while nuke-targeting cancels
-    // the launch (no propagation — keep clicks predictable).
-    if (mode === 'nukeTargeting') {
-      cancelNukeTargeting('Nuke launch cancelled.');
+    if (mode === 'missileTargeting' && missileContext) {
+      const missileTarget = units.find((u) => u.id === unitId);
+      if (!missileTarget || missileTarget.destroyed) {
+        cancelMissileTargeting('Missile lock cancelled.');
+        return;
+      }
+      if (missileTarget.team === missileContext.unit.team) {
+        cancelMissileTargeting('Missile lock cancelled — friendly target.');
+        return;
+      }
+      if (!isValidMissileTarget(missileTarget)) {
+        cancelMissileTargeting('Missile lock cancelled — out of range.');
+        return;
+      }
+      void fireMissileAt(missileTarget);
+      return;
+    }
+    // Clicking anything other than a valid target while targeting cancels.
+    if (isWeaponTargetingMode()) {
+      if (mode === 'nukeTargeting') {
+        cancelNukeTargeting('Nuke launch cancelled.');
+      } else {
+        cancelMissileTargeting('Missile lock cancelled.');
+      }
       return;
     }
 
@@ -1622,7 +1749,7 @@ picker.setEvents({
 
     if (selectedId === null) {
       if (target.team !== currentTeam) {
-        setStatus(`That's a ${teamName(target.team)} mech — it's ${teamName(currentTeam)}'s turn.`);
+        selectUnit(target, { inspect: true });
         return;
       }
       selectUnit(target);
@@ -1637,6 +1764,13 @@ picker.setEvents({
     const shooter = units.find((u) => u.id === selectedId);
     if (!shooter || shooter.destroyed) {
       if (target.team === currentTeam) selectUnit(target);
+      else selectUnit(target, { inspect: true });
+      return;
+    }
+
+    if (inspectOnly) {
+      if (target.team !== shooter.team) selectUnit(target, { inspect: true });
+      else selectUnit(target);
       return;
     }
 
@@ -1651,8 +1785,12 @@ picker.setEvents({
 
   onTerrainClick(terrainId) {
     if (mode === 'animating' || gameOver || aiActive) return;
-    if (mode === 'nukeTargeting') {
-      cancelNukeTargeting('Nuke launch cancelled.');
+    if (isWeaponTargetingMode()) {
+      if (mode === 'nukeTargeting') {
+        cancelNukeTargeting('Nuke launch cancelled.');
+      } else {
+        cancelMissileTargeting('Missile lock cancelled.');
+      }
       return;
     }
     const terrain = terrainPieces.find((t) => t.id === terrainId);
@@ -1668,8 +1806,12 @@ picker.setEvents({
 
   onCrateClick(crateId) {
     if (mode === 'animating' || gameOver || aiActive) return;
-    if (mode === 'nukeTargeting') {
-      cancelNukeTargeting('Nuke launch cancelled.');
+    if (isWeaponTargetingMode()) {
+      if (mode === 'nukeTargeting') {
+        cancelNukeTargeting('Nuke launch cancelled.');
+      } else {
+        cancelMissileTargeting('Missile lock cancelled.');
+      }
       return;
     }
     const crate = crates.find((c) => c.id === crateId);
@@ -1696,6 +1838,7 @@ picker.setEvents({
 
   onTileClick(tile) {
     if (mode === 'animating' || gameOver || aiActive) return;
+    if (isCoopActive() && isCoopActionPending()) return;
 
     if (mode === 'nukeTargeting') {
       if (!nukeContext) {
@@ -1712,6 +1855,10 @@ picker.setEvents({
 
     const shooter = selectedId ? units.find((u) => u.id === selectedId) : null;
     if (!shooter || shooter.destroyed) {
+      deselect();
+      return;
+    }
+    if (inspectOnly) {
       deselect();
       return;
     }
@@ -1734,34 +1881,52 @@ picker.setEvents({
   },
 });
 
-function selectUnit(unit: Unit): void {
-  if (isCoopActive() && !canControlUnit(unit.id)) {
+function selectUnit(unit: Unit, opts?: { inspect?: boolean }): void {
+  if (isCoopActive() && !opts?.inspect && !canControlUnit(unit.id)) {
     setStatus('Not your mech or sub-phase.');
     return;
   }
+  if (selectedId && selectedId !== unit.id) {
+    const prev = units.find((u) => u.id === selectedId);
+    if (prev) setUnitHighlight(prev.mech.object, 'selected', false);
+  }
   selectedId = unit.id;
+  inspectOnly = opts?.inspect === true || unit.team !== currentTeam;
   mode = 'selected';
-  recomputeReachable(unit);
+  setUnitHighlight(unit.mech.object, 'selected', true);
+  if (!inspectOnly) {
+    recomputeReachable(unit);
+  } else {
+    reachableForSelected = new Map();
+  }
   refreshTileVisuals(null);
   renderDashboard();
-  if (unit.team === 1 && teamControllers[1] === 'human') {
-    focusCameraOnUnit(unit);
+  focusCameraOnUnit(unit);
+  if (inspectOnly) {
+    setStatus(
+      `Inspecting ${describeUnit(unit)} — ` +
+      `HP ${unit.hp}/${unit.maxHp.effective}, ` +
+      `AP ${unit.ap}/${unit.maxAp.effective}, ` +
+      `range ${unit.attackRange.effective}, dmg ${unit.damage.effective}.`,
+    );
+  } else {
+    setStatus(describeSelection(unit));
   }
-  setStatus(describeSelection(unit));
 }
 
 /** Smoothly pan and zoom the camera toward a mech's hex. */
 function focusCameraOnUnit(unit: Unit): void {
   const p = board.tileToWorld(unit.tile);
   const elev = elevationAt(unit.tile);
-  isoCam.setTarget(new THREE.Vector3(p.x, TILE_TOP_Y + elev + 0.9, p.z));
-  isoCam.setZoom(mapConfig.cameraZoom * SELECT_FOCUS_ZOOM_FACTOR);
+  isoCam.setTarget(new THREE.Vector3(p.x, TILE_TOP_Y + elev + 0.75, p.z));
+  const base = isoCam.getDefaultZoom();
+  isoCam.setZoom(base * SELECT_FOCUS_ZOOM_FACTOR);
 }
 
 /** Pull back to the map overview after deselecting. */
 function restoreCameraOverview(): void {
   isoCam.setTarget(CAMERA_OVERVIEW_TARGET);
-  isoCam.setZoom(mapConfig.cameraZoom);
+  isoCam.setZoom(isoCam.getDefaultZoom());
 }
 
 function describeSelection(unit: Unit): string {
@@ -1780,7 +1945,7 @@ function describeSelection(unit: Unit): string {
     return head + `Click your tile (or the crate) to open it for 1 AP — beware traps.`;
   }
   const arcHint = requiresForwardArc(unit)
-    ? `Heavy: fires forward arc only — pivot with , / . (1 AP). `
+    ? `Heavy: fires forward arc only — pivot with , / . `
     : '';
   return head + arcHint + (unit.ap > 0
     ? `Green = move, light green = fire arc, red = shoot.`
@@ -1788,18 +1953,24 @@ function describeSelection(unit: Unit): string {
 }
 
 function deselect(): void {
-  // If we were mid-nuke launch, abort cleanly before wiping state.
   if (mode === 'nukeTargeting') nukeContext = null;
+  if (mode === 'missileTargeting') missileContext = null;
+  if (selectedId) {
+    const prev = units.find((u) => u.id === selectedId);
+    if (prev) setUnitHighlight(prev.mech.object, 'selected', false);
+  }
   selectedId = null;
+  inspectOnly = false;
   mode = 'idle';
   reachableForSelected = new Map();
   board.clearAllStates();
   restoreCameraOverview();
+  updateOcclusionFade(isoCam.camera, null, terrainPieces);
   renderDashboard();
 }
 
 function recomputeReachable(unit: Unit): void {
-  if (unit.immobilised || unit.ap <= 0) {
+  if (unit.immobilised || unit.stunnedTurns > 0 || unit.ap <= 0) {
     // Start hex only — no other reachable tiles.
     reachableForSelected = new Map([[hexKey(unit.tile), 0]]);
     return;
@@ -1845,10 +2016,23 @@ function refreshTileVisuals(hover: HexCoord | null): void {
     return;
   }
 
+  if (mode === 'missileTargeting' && missileContext) {
+    const u = missileContext.unit;
+    for (const target of units) {
+      if (target.destroyed || target.team === u.team) continue;
+      if (isValidMissileTarget(target)) {
+        board.setTileState(target.tile, 'attack');
+      }
+    }
+    board.setTileState(u.tile, 'selected');
+    if (hover && board.has(hover)) board.setTileState(hover, 'hover');
+    return;
+  }
+
   const sel = selectedId ? units.find((u) => u.id === selectedId) : null;
 
-  // Green: reachable hexes (skipped entirely for immobilised mechs).
-  if (sel && !sel.immobilised) {
+  // Green: reachable hexes (skipped for inspect-only, stunned, or immobilised mechs).
+  if (sel && !inspectOnly && !sel.immobilised && sel.stunnedTurns === 0) {
     for (const k of reachableForSelected.keys()) {
       const h = hexFromKey(k);
       if (hexEquals(sel.tile, h)) continue;
@@ -1859,7 +2043,7 @@ function refreshTileVisuals(hover: HexCoord | null): void {
   }
 
   // Lighter green: heavy mech forward fire cone (3 at range 1, 8 at range 2+).
-  if (sel && !sel.immobilised && requiresForwardArc(sel) && sel.ap >= AP_COST.shoot) {
+  if (sel && !inspectOnly && !sel.immobilised && sel.stunnedTurns === 0 && requiresForwardArc(sel) && sel.ap >= AP_COST.shoot) {
     const range = sel.attackRange.effective;
     for (const h of hexesInForwardCone(sel.tile, sel.facingDeg, range, (t) => board.has(t))) {
       if (hexEquals(sel.tile, h)) continue;
@@ -1868,7 +2052,7 @@ function refreshTileVisuals(hover: HexCoord | null): void {
   }
 
   // Red: enemies + destructible terrain in range (and forward arc for heavy).
-  if (sel && !sel.immobilised && sel.ap >= AP_COST.shoot) {
+  if (sel && !inspectOnly && !sel.immobilised && sel.stunnedTurns === 0 && sel.ap >= AP_COST.shoot) {
     for (const target of units) {
       if (target.destroyed || target.team === sel.team) continue;
       if (canShootAtTile(sel, target.tile)) {
@@ -1924,7 +2108,9 @@ function updateMoveCostOverlay(): void {
   if (
     !settings.showMoveCost ||
     !selectedId ||
+    inspectOnly ||
     mode === 'nukeTargeting' ||
+    mode === 'missileTargeting' ||
     mode === 'animating' ||
     aiActive ||
     gameOver
@@ -1999,7 +2185,9 @@ function updatePivotControls(): void {
   const hide =
     !settings.showMoveCost ||
     !selectedId ||
+    inspectOnly ||
     mode === 'nukeTargeting' ||
+    mode === 'missileTargeting' ||
     mode === 'animating' ||
     aiActive ||
     gameOver;
@@ -2061,8 +2249,8 @@ function updatePivotControls(): void {
 // re-orient WITHOUT moving, pivot one hex direction with [,] / [.] or the
 // on-screen buttons. Heavy chassis pay 1 AP per pivot.
 
-function turnApCost(unit: Unit): number {
-  return unit.chassis === 'heavy' ? 1 : 0;
+function turnApCost(_unit: Unit): number {
+  return 0;
 }
 
 /**
@@ -2071,9 +2259,13 @@ function turnApCost(unit: Unit): number {
  */
 function doTurnUnit(unit: Unit, direction: 'left' | 'right'): boolean {
   if (gameOver || mode === 'animating' || aiActive) return false;
-  if (mode === 'nukeTargeting') return false;
+  if (isWeaponTargetingMode()) return false;
   if (unit.destroyed) return false;
   if (isCoopActive()) {
+    if (isCoopActionPending()) {
+      setStatus('Waiting for server…');
+      return false;
+    }
     if (!canControlUnit(unit.id)) {
       setStatus('Not your sub-phase or mech.');
       return false;
@@ -2145,16 +2337,47 @@ function describeUnit(u: Unit): string {
 }
 
 function describeTerrain(t: TerrainPiece): string {
+  return terrainKindLabel(t);
+}
+
+function terrainKindLabel(t: TerrainPiece): string {
   const hp = t.hp !== undefined && t.maxHp !== undefined
-    ? ` (HP ${t.hp}/${t.maxHp})`
-    : ' (indestructible)';
-  return `${t.kind}${hp}`;
+    ? ` — HP ${t.hp}/${t.maxHp}`
+    : t.hp === undefined ? ' — indestructible' : '';
+  switch (t.kind) {
+    case 'rubble':
+      return `Rough terrain (rubble)${hp} — costs 2 AP to cross`;
+    case 'building':
+      if (t.destroyed) return `Rough terrain (ruins) — costs 2 AP to cross`;
+      return `Building${hp}`;
+    case 'wall':
+      return `Destructible wall${hp}`;
+    case 'solidWall':
+      return 'Solid wall — blocks movement';
+    case 'platform':
+      return `Elevated platform${hp}`;
+    default:
+      return `${t.kind}${hp}`;
+  }
+}
+
+function describeTileTerrain(h: HexCoord): string {
+  const t = terrainAt(h);
+  const coord = `(${h.q},${h.r})`;
+  if (!t) return `${coord} — Clear ground (1 AP)`;
+  return `${coord} — ${terrainKindLabel(t)}`;
 }
 
 // ----- Movement ------------------------------------------------------------
 
 async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
   if (gameOver) return;
+  if (!isCoopActive()) {
+    if (unit.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
+      setStatus(`Not ${teamName(unit.team)}'s turn.`);
+      return;
+    }
+  }
   if (unit.immobilised) {
     setStatus(`${describeUnit(unit)} is immobilised and cannot move.`);
     return;
@@ -2176,6 +2399,10 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
   }
 
   if (isCoopActive()) {
+    if (isCoopActionPending()) {
+      setStatus('Waiting for server…');
+      return;
+    }
     if (!canControlUnit(unit.id)) {
       setStatus('Not your mech or sub-phase.');
       return;
@@ -2201,6 +2428,7 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
 
   if (unit.movementMode === 'burst') unit.ap -= 1;
 
+  setUnitHighlight(unit.mech.object, 'moving', true);
   try {
     for (const step of path) {
       await animateStep(unit, step);
@@ -2217,6 +2445,8 @@ async function walkUnitTo(unit: Unit, dest: HexCoord): Promise<void> {
     gameLog.error('anim', 'walkUnitTo failed', { id: unit.id, err: String(err) });
     clearAnimating('idle', 'walkUnitTo-error');
     throw err;
+  } finally {
+    setUnitHighlight(unit.mech.object, 'moving', false);
   }
 
   unit.mech.playAnimation('idle');
@@ -2611,6 +2841,7 @@ function useItemFromSlot(unit: Unit, addr: SlotAddress): void {
     case 'placeMine':    doPlaceMine(unit, item, addr); return;
     case 'destroySpawn': doDestroySpawn(unit, item, addr); return;
     case 'tacticalNuke': enterNukeTargeting(unit, item, addr); return;
+    case 'fireMissile':  enterMissileTargeting(unit, item, addr); return;
   }
 }
 
@@ -2714,8 +2945,10 @@ function enterNukeTargeting(unit: Unit, item: Item, addr: SlotAddress): void {
     return;
   }
   if (mode === 'nukeTargeting') {
-    // Different nuke / different unit — drop the previous context first.
     cancelNukeTargeting();
+  }
+  if (mode === 'missileTargeting') {
+    cancelMissileTargeting();
   }
 
   selectedId = unit.id;
@@ -2737,6 +2970,109 @@ function cancelNukeTargeting(reason?: string): void {
   refreshTileVisuals(null);
   renderDashboard();
   if (reason) setStatus(reason);
+}
+
+function enterMissileTargeting(unit: Unit, item: Item, addr: SlotAddress): void {
+  if (mode === 'missileTargeting' && missileContext && missileContext.item.id === item.id) {
+    cancelMissileTargeting('Missile lock cancelled.');
+    return;
+  }
+  if (isWeaponTargetingMode()) {
+    cancelNukeTargeting();
+    cancelMissileTargeting();
+  }
+
+  selectedId = unit.id;
+  mode = 'missileTargeting';
+  missileContext = { unit, item, addr, range: MISSILE_RANGE };
+  refreshTileVisuals(null);
+  renderDashboard();
+  setStatus(
+    `${describeUnit(unit)} locking ${item.name}. Click a red enemy within ` +
+    `${MISSILE_RANGE} hexes to fire — anywhere else cancels.`,
+  );
+}
+
+function cancelMissileTargeting(reason?: string): void {
+  if (mode !== 'missileTargeting') return;
+  missileContext = null;
+  mode = selectedId ? 'selected' : 'idle';
+  refreshTileVisuals(null);
+  renderDashboard();
+  if (reason) setStatus(reason);
+}
+
+function isValidMissileTarget(target: Unit): boolean {
+  if (!missileContext || target.destroyed) return false;
+  if (target.team === missileContext.unit.team) return false;
+  return hexDistance(missileContext.unit.tile, target.tile) <= missileContext.range;
+}
+
+async function fireMissileAt(target: Unit): Promise<void> {
+  if (!missileContext || gameOver) return;
+  const ctx = missileContext;
+  const { unit, item, addr } = ctx;
+  if (!isValidMissileTarget(target)) {
+    cancelMissileTargeting('Missile lock cancelled — out of range.');
+    return;
+  }
+  if (unit.ap < item.active!.apCost) {
+    cancelMissileTargeting(`${describeUnit(unit)} needs ${item.active!.apCost} AP to fire.`);
+    return;
+  }
+
+  const damage = item.active!.amount;
+  unit.ap -= item.active!.apCost;
+  consumeItem(unit, item, addr);
+  missileContext = null;
+  mode = 'animating';
+  refreshTileVisuals(null);
+  renderDashboard();
+
+  const torsoTgt = target.mech.getAttachPoint('torso');
+  const targetWorld = new THREE.Vector3();
+  if (torsoTgt) torsoTgt.getWorldPosition(targetWorld);
+  else target.mech.object.getWorldPosition(targetWorld);
+  await faceAndFire(unit, targetWorld, 'missile');
+
+  if (torsoTgt) {
+    torsoTgt.getWorldPosition(targetWorld);
+    fx.impact({ position: targetWorld, color: '#ff8a3d', intensity: 1.4 });
+    fx.explosion({ position: targetWorld, scale: 0.9, color: '#ff6b35' });
+  }
+  target.mech.playAnimation('hit');
+
+  const rawDamage = damage;
+  const applied = applyArmor(rawDamage, target.armorThreshold);
+  const deflected = rawDamage > 0 && applied === 0;
+  target.hp = Math.max(0, target.hp - applied);
+  target.mech.setDamageLevel(
+    Math.min(1, (target.maxHp.effective - target.hp) / target.maxHp.effective),
+  );
+
+  if (deflected) {
+    setStatus(
+      `${describeUnit(target)} ARMOR DEFLECTS the missile ` +
+      `(needs ≥ ${target.armorThreshold} per hit).`,
+    );
+  } else if (target.hp <= 0) {
+    target.destroyed = true;
+    const techMsg = target.team === 2 ? registerPlayerKill(unit) : '';
+    if (torsoTgt) fx.explosion({ position: targetWorld, scale: 1.5 });
+    target.mech.playAnimation('destroyed');
+    setStatus(`${describeUnit(target)} destroyed by ${item.name}.${techMsg}`);
+    sinkUnitWreckage(target);
+  } else {
+    setStatus(
+      `${describeUnit(unit)}'s missile hits ${describeUnit(target)} for ${applied}. ` +
+      `(HP ${target.hp}/${target.maxHp.effective})`,
+    );
+  }
+
+  mode = selectedId ? 'selected' : 'idle';
+  refreshAfterAction();
+  renderDashboard();
+  checkWinCondition();
 }
 
 function isValidNukeTarget(tile: HexCoord): boolean {
@@ -2916,6 +3252,12 @@ function highGroundBonus(shooter: Unit, target: Unit): number {
 
 async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
   if (gameOver) return;
+  if (!isCoopActive()) {
+    if (shooter.team !== currentTeam || teamControllers[currentTeam] !== 'human') {
+      setStatus(`Not ${teamName(shooter.team)}'s turn.`);
+      return;
+    }
+  }
   if (shooter.immobilised) {
     setStatus(`${describeUnit(shooter)} is immobilised and cannot fire.`);
     return;
@@ -2936,13 +3278,16 @@ async function fireAtUnit(shooter: Unit, target: Unit): Promise<void> {
   }
   if (!canShootAtTile(shooter, target.tile)) {
     setStatus(
-      `${describeUnit(shooter)} can only fire forward — pivot with , / . ` +
-      `(heavy costs 1 AP per turn).`,
+      `${describeUnit(shooter)} can only fire forward — pivot with , / .`,
     );
     return;
   }
 
   if (isCoopActive()) {
+    if (isCoopActionPending()) {
+      setStatus('Waiting for server…');
+      return;
+    }
     if (!canControlUnit(shooter.id)) {
       setStatus('Not your sub-phase.');
       return;
@@ -3041,8 +3386,7 @@ async function fireAtTerrain(shooter: Unit, terrain: TerrainPiece): Promise<void
   }
   if (!canShootAtTile(shooter, terrain.tile)) {
     setStatus(
-      `${describeUnit(shooter)} can only fire forward — pivot with , / . ` +
-      `(heavy costs 1 AP per turn).`,
+      `${describeUnit(shooter)} can only fire forward — pivot with , / .`,
     );
     return;
   }
@@ -3090,13 +3434,28 @@ function formatDamage(d: number): string {
   return Number.isInteger(d) ? `${d}` : `${d.toFixed(1)}`;
 }
 
+function shotVisualStyle(
+  shooter: Unit,
+  override?: 'missile',
+): { color: string; thickness: number; speed: number } {
+  if (override === 'missile') {
+    return { color: '#ff8a3d', thickness: 0.2, speed: 44 };
+  }
+  const w = shooter.mech.config.weaponRight;
+  if (w === 'beam') return { color: '#b8f0ff', thickness: 0.13, speed: 58 };
+  if (w === 'missiles') return { color: '#ff9b4d', thickness: 0.17, speed: 46 };
+  return { color: '#fff2a8', thickness: 0.15, speed: 52 };
+}
+
 /**
- * Animate the shooter facing + firing. Resolves ~120ms after the trigger,
- * which is the right moment to apply damage and spawn the impact FX.
- * Always resolves — even if the mech has no rightHand attach point, so
- * callers can safely `await` it without risk of a dangling promise.
+ * Animate the shooter facing + firing. Resolves when the projectile reaches
+ * the target so impact FX line up with the bolt arrival.
  */
-function faceAndFire(shooter: Unit, targetWorldPos: THREE.Vector3): Promise<void> {
+function faceAndFire(
+  shooter: Unit,
+  targetWorldPos: THREE.Vector3,
+  style?: 'missile',
+): Promise<void> {
   const sp = shooter.mech.object.position;
   const dx = targetWorldPos.x - sp.x;
   const dz = targetWorldPos.z - sp.z;
@@ -3105,13 +3464,32 @@ function faceAndFire(shooter: Unit, targetWorldPos: THREE.Vector3): Promise<void
   shooter.mech.setFacing(yawDeg);
   shooter.mech.playAnimation('fire');
 
-  const barrel = shooter.mech.getAttachPoint('rightHand');
+  const barrel = style === 'missile'
+    ? (shooter.mech.getAttachPoint('leftHand')
+      ?? shooter.mech.getAttachPoint('shoulderL')
+      ?? shooter.mech.getAttachPoint('rightHand'))
+    : shooter.mech.getAttachPoint('rightHand');
   if (barrel) {
     const barrelWorld = new THREE.Vector3();
     barrel.getWorldPosition(barrelWorld);
     const dir = targetWorldPos.clone().sub(barrelWorld).normalize();
-    fx.muzzleFlash({ position: barrelWorld, direction: dir });
-    fx.beam({ from: barrelWorld, to: targetWorldPos, durationSec: 0.18, color: '#fff2a8' });
+    fx.muzzleFlash({
+      position: barrelWorld,
+      direction: dir,
+      color: style === 'missile' ? '#ff9b4d' : '#ffcf6e',
+      intensity: style === 'missile' ? 1.4 : 1.1,
+    });
+    const vis = shotVisualStyle(shooter, style);
+    const dist = barrelWorld.distanceTo(targetWorldPos);
+    const travelMs = Math.max(70, Math.min(220, (dist / vis.speed) * 1000));
+    fx.projectile({
+      from: barrelWorld,
+      to: targetWorldPos,
+      color: vis.color,
+      thickness: vis.thickness,
+      speed: vis.speed,
+    });
+    return new Promise((resolve) => setTimeout(resolve, travelMs));
   }
 
   return new Promise((resolve) => setTimeout(resolve, 120));
@@ -3398,8 +3776,7 @@ async function runAiTurn(): Promise<void> {
 
   if (gameOver) return;
   await delay(AI_THINK_MS);
-  gameLog.info('turn', 'AI invoking doEndTurn');
-  doEndTurn();
+  gameLog.info('turn', 'AI turn complete — awaiting handoff', debugGameState());
 }
 
 async function aiPlayMech(mech: Unit): Promise<void> {
@@ -3888,6 +4265,12 @@ stage.addTicker((_dt, total) => {
 // Move-cost overlay: keep AP labels glued to reachable hexes as the camera moves.
 stage.addTicker(() => {
   updateMoveCostOverlay();
+  if (selectedId) {
+    const sel = units.find((u) => u.id === selectedId);
+    updateOcclusionFade(isoCam.camera, sel && !sel.destroyed ? sel.mech.object : null, terrainPieces);
+  } else {
+    updateOcclusionFade(isoCam.camera, null, terrainPieces);
+  }
 });
 
 let fpsAcc = 0;
@@ -3907,10 +4290,31 @@ stage.addTicker((dt, total) => {
 
 stage.start();
 
+const viteHot = (import.meta as ImportMeta & { hot?: { dispose(cb: () => void): void } }).hot;
+if (viteHot) {
+  viteHot.dispose(() => {
+    disposeAllPreviews();
+    stage.stop();
+    stage.dispose();
+  });
+}
+
+window.addEventListener('pagehide', () => {
+  disposeAllPreviews();
+  stage.stop();
+  stage.dispose();
+});
+
 // ----- Helpers -------------------------------------------------------------
 
 function setStatus(text: string): void {
-  statusEl.textContent = text;
+  if (sideInfoStatusEl) sideInfoStatusEl.textContent = text;
+  if (statusEl) statusEl.textContent = text;
+}
+
+function setTerrainInfo(text: string): void {
+  if (!sideInfoTerrainEl) return;
+  sideInfoTerrainEl.textContent = text;
 }
 
 // ----- Item reveal card ----------------------------------------------------

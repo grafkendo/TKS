@@ -17,6 +17,7 @@ import {
   hexKey,
   hexToWorld,
 } from '../hex/HexCoord';
+import { TABLE_FELT, TILE_DARK, TILE_LIGHT } from './miniaturePalette';
 
 export type TileVisualState = 'idle' | 'hover' | 'selected' | 'move' | 'fireArc' | 'attack';
 
@@ -92,7 +93,7 @@ export class Board {
   private buildGround(): void {
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(100, 100),
-      new THREE.MeshStandardMaterial({ color: 0x0c1116, roughness: 0.95 })
+      new THREE.MeshStandardMaterial({ color: TABLE_FELT, roughness: 0.98, metalness: 0 }),
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -TILE_HEIGHT / 2 - 0.02;
@@ -110,8 +111,8 @@ export class Board {
     const overlayGeom = new THREE.CylinderGeometry(hexRadius * 0.94, hexRadius * 0.94, 0.001, 6, 1);
     overlayGeom.rotateY(Math.PI / 6);
 
-    const matLight = new THREE.MeshStandardMaterial({ color: 0x2d3c47, roughness: 0.85, metalness: 0.05 });
-    const matDark  = new THREE.MeshStandardMaterial({ color: 0x1f2a30, roughness: 0.85, metalness: 0.05 });
+    const matLight = new THREE.MeshStandardMaterial({ color: TILE_LIGHT, roughness: 0.92, metalness: 0.02 });
+    const matDark  = new THREE.MeshStandardMaterial({ color: TILE_DARK, roughness: 0.92, metalness: 0.02 });
 
     for (const h of this.hexes) {
       // 2-color alternation via (q + 2*r) parity gives a clean stripe

@@ -30,7 +30,8 @@ export type ItemKind =
   | 'rangeModule'
   | 'mine'
   | 'demoCharge'
-  | 'tacticalNuke';
+  | 'tacticalNuke'
+  | 'missileLauncher';
 export type SlotKind = 'hand' | 'backpack';
 export type PassiveStat = 'damage' | 'maxHp' | 'attackRange';
 /**
@@ -40,7 +41,7 @@ export type PassiveStat = 'damage' | 'maxHp' | 'attackRange';
  *  - destroySpawn : breach the closest orbital drop point in range
  *  - tacticalNuke : enter targeting mode; on confirm detonate a 3-hex blast
  */
-export type ActiveKind = 'heal' | 'placeMine' | 'destroySpawn' | 'tacticalNuke';
+export type ActiveKind = 'heal' | 'placeMine' | 'destroySpawn' | 'tacticalNuke' | 'fireMissile';
 
 export interface ItemPassive {
   /** Which of the carrier's Stats this modifier targets. */

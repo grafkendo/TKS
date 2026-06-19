@@ -4,6 +4,7 @@
 
 import type { HexCoord } from '../hex/HexCoord';
 import type { GameOutcome } from '../rules/winCondition';
+import type { ArchetypeKey } from '../enemies/archetypes';
 
 export type CoopPhase = 'lobby' | 'human' | 'ai' | 'ended';
 
@@ -48,6 +49,8 @@ export interface CoopUnit {
   techKills: number;
   /** Rolled once at spawn; client equips on first sync. */
   items: CoopItemSpec[];
+  /** Team-2 enemy type for visuals and stats (grunt, scout, tank, …). */
+  archetypeKey?: ArchetypeKey;
 }
 
 export interface CoopGameState {
@@ -78,6 +81,7 @@ export type CoopClientMessage =
   | { type: 'setName'; name: string }
   | { type: 'setMechSelection'; mechs: ChassisKind[] }
   | { type: 'setReady'; ready: boolean }
+  | { type: 'setMap'; mapId: string }
   | { type: 'startGame' }
   | { type: 'action'; action: CoopAction };
 
@@ -99,6 +103,7 @@ export type CoopServerMessage =
     }
   | { type: 'state'; state: CoopGameState }
   | { type: 'events'; events: CoopGameEvent[] }
+  | { type: 'actionResult'; events: CoopGameEvent[]; state: CoopGameState }
   | { type: 'error'; reason: string };
 
 export type CoopGameEvent =

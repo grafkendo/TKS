@@ -124,6 +124,29 @@
       }
       .map-box h2 { margin: 0 0 4px; font-size: 19px; }
       .map-box > p { margin: 0 0 14px; color: #555; font-size: 14px; line-height: 1.5; }
+      .coop-map-box {
+        margin: 14px 0 0;
+        padding: 14px;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.1);
+        background: rgba(0,0,0,0.15);
+      }
+      .coop-map-box > p {
+        margin: 0 0 10px;
+        font-size: 12px;
+        color: #8a93a0;
+        line-height: 1.45;
+      }
+      .coop-map-box .map-option {
+        border-color: rgba(255,255,255,0.12);
+        background: rgba(0,0,0,0.2);
+      }
+      .coop-map-box .map-option:hover {
+        border-color: rgba(255,206,77,0.35);
+        background: rgba(255,206,77,0.06);
+      }
+      .coop-map-box .map-option-body strong { color: #e8ecf0; }
+      .coop-map-box .map-option-body span { color: #8a93a0; }
       #map-picker { display: flex; flex-direction: column; gap: 8px; }
       .map-option {
         display: flex; gap: 10px; align-items: flex-start;
@@ -141,6 +164,115 @@
         cursor: pointer;
       }
       .solo-card:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
+      .map-picker-layout {
+        display: flex;
+        gap: 18px;
+        align-items: flex-start;
+      }
+      .map-picker-list {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .map-preview-panel {
+        flex-shrink: 0;
+        width: min(42vw, 300px);
+        padding: 14px;
+        border-radius: 10px;
+        border: 1px solid #e4ddd2;
+        background: #faf8f4;
+      }
+      .map-preview-panel h3 {
+        margin: 0 0 8px;
+        font-size: 15px;
+        color: #1f1f1f;
+      }
+      .map-preview-canvas {
+        display: block;
+        width: 100%;
+        height: 200px;
+        border-radius: 8px;
+        background: linear-gradient(180deg, #dce4ec 0%, #b8c4d0 100%);
+      }
+      .map-preview-desc {
+        margin: 8px 0 0;
+        font-size: 11px;
+        color: #666;
+        line-height: 1.45;
+      }
+      .map-enemy-cards-heading {
+        margin: 12px 0 8px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: #6a7785;
+      }
+      .map-enemy-cards-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .map-enemy-card {
+        padding: 6px 6px 8px;
+        border-radius: 8px;
+        border: 1px solid #e4ddd2;
+        background: white;
+        text-align: center;
+      }
+      .map-enemy-preview {
+        width: 100%;
+        height: 72px;
+        border-radius: 6px;
+        background: linear-gradient(180deg, #eef2f6 0%, #d5dde6 100%);
+      }
+      .map-enemy-card-title {
+        margin-top: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        color: #2d5ea8;
+      }
+      .map-enemy-card-model {
+        font-size: 9px;
+        color: #777;
+        line-height: 1.3;
+      }
+      .map-enemy-card-stats {
+        margin-top: 3px;
+        font-size: 8.5px;
+        color: #888;
+        line-height: 1.3;
+      }
+      .coop-map-preview-stack {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255,255,255,0.1);
+      }
+      .coop-map-preview-stack h3 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        color: #ffce4d;
+      }
+      .coop-map-preview-stack .map-preview-canvas {
+        background: linear-gradient(180deg, #2a3540 0%, #151c24 100%);
+      }
+      .coop-map-preview-stack .map-enemy-cards-heading { color: #8a93a0; }
+      .coop-map-preview-stack .map-enemy-card {
+        border-color: rgba(255,255,255,0.12);
+        background: rgba(0,0,0,0.2);
+      }
+      .coop-map-preview-stack .map-enemy-card-title { color: #7aa8ff; }
+      .coop-map-preview-stack .map-enemy-card-model,
+      .coop-map-preview-stack .map-enemy-card-stats { color: #8a93a0; }
+      .coop-map-preview-stack .map-enemy-preview {
+        background: linear-gradient(180deg, #2a3540 0%, #151c24 100%);
+      }
+      @media (max-width: 720px) {
+        .map-picker-layout { flex-direction: column; }
+        .map-preview-panel { width: 100%; box-sizing: border-box; }
+      }
     </style>
   </head>
   <body>
@@ -149,14 +281,22 @@
       <p class="sub">Two builds, one rules engine. Pick a target:</p>
 
       <div class="map-box">
-        <h2><span class="tag tag-new">MAP</span>Choose battlefield</h2>
-        <p>Applies to solo and co-op. Capture maps need all objectives; urban is elimination only.</p>
-        <div id="map-picker"></div>
+        <h2><span class="tag tag-new">MAP</span>Solo battlefield</h2>
+        <p>Pick a map for the single-player demo. Capture maps need all objectives; urban is elimination only.</p>
+        <div class="map-picker-layout">
+          <div id="solo-map-picker" class="map-picker-list"></div>
+          <div class="map-preview-panel" aria-label="Selected map preview">
+            <h3 id="solo-map-preview-title">Four Quadrants</h3>
+            <canvas id="solo-map-preview" class="map-preview-canvas" width="280" height="200"></canvas>
+            <p id="solo-map-preview-desc" class="map-preview-desc"></p>
+            <div id="solo-map-enemy-cards"></div>
+          </div>
+        </div>
       </div>
 
       <div class="coop-box">
         <h2><span class="tag tag-coop">CO-OP</span>Play with a friend</h2>
-        <p>Two players vs AI in the same mission. Host creates a room, sends an invite link, both pick mechs in the lobby.</p>
+        <p>Two players vs AI in the same mission. The host creates a room and picks the map; guests join with a room code or invite link.</p>
 
         <div class="coop-tabs">
           <button type="button" id="coop-tab-create" class="active">Create room</button>
@@ -166,6 +306,18 @@
         <div id="coop-panel-create" class="coop-panel">
           <label for="coop-host-name">Your callsign</label>
           <input id="coop-host-name" type="text" maxlength="24" placeholder="Host" value="Host" />
+          <div class="coop-map-box">
+            <p><strong style="color:#ffce4d">Host picks the map</strong> — your friend will play on this battlefield.</p>
+            <div class="map-picker-layout">
+              <div id="host-map-picker" class="map-picker-list"></div>
+              <div class="map-preview-panel coop-map-preview-stack" aria-label="Host map preview">
+                <h3 id="host-map-preview-title">Four Quadrants</h3>
+                <canvas id="host-map-preview" class="map-preview-canvas" width="280" height="200"></canvas>
+                <p id="host-map-preview-desc" class="map-preview-desc"></p>
+                <div id="host-map-enemy-cards"></div>
+              </div>
+            </div>
+          </div>
           <button type="button" id="coop-create-btn" class="primary">Create room &amp; play</button>
           <p class="coop-hint">You'll get a room code and a copyable invite link in the lobby.</p>
         </div>
@@ -176,13 +328,14 @@
           <label for="coop-join-name">Your callsign</label>
           <input id="coop-join-name" type="text" maxlength="24" placeholder="Guest" value="Guest" />
           <button type="button" id="coop-join-btn" class="primary">Join room</button>
+          <p class="coop-hint">The host chooses the map. Use their invite link to load the correct battlefield automatically.</p>
         </div>
       </div>
 
       <button type="button" class="card solo-card" id="solo-play-btn">
         <h2><span class="tag tag-new">NEW</span>3D mech demo (solo)</h2>
         <p>
-          Three.js tactical combat vs AI on the map selected above.
+          Three.js tactical combat vs AI on the solo map selected above.
           For co-op, use the section below.
         </p>
       </button>

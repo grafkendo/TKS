@@ -75,8 +75,12 @@ export function buildCoopGameUrl(params: CoopGameUrlParams, baseHref?: string): 
 }
 
 /** Invite link for a second player (placeholder name they can change in lobby). */
-export function buildFriendInviteUrl(roomId: string, baseHref?: string): string {
+export function buildFriendInviteUrl(
+  roomId: string,
+  baseHref?: string,
+  mapId?: string,
+): string {
   const base = baseHref ?? window.location.href;
-  const map = new URL(base).searchParams.get('map') ?? undefined;
+  const map = mapId ?? new URL(base).searchParams.get('map') ?? undefined;
   return buildCoopGameUrl({ room: roomId, name: 'Friend', map }, base);
 }

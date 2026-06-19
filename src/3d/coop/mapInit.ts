@@ -26,6 +26,7 @@ function buildPlayerSpawnTiles(spawns: MapSpawns): string[] {
   const seeds: HexCoord[] = [
     spawns.r1,
     spawns.r2,
+    ...(spawns.r3 ? [spawns.r3] : []),
     { q: spawns.r1.q - 1, r: spawns.r1.r },
     { q: spawns.r2.q + 1, r: spawns.r2.r },
     { q: spawns.r1.q + 1, r: spawns.r1.r },

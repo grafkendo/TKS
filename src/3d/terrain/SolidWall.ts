@@ -33,7 +33,7 @@ export class SolidWall extends BaseTerrain {
   private build(height: number): void {
     const bodyMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x3a3f44,
+        color: 0x6e6e74,
         roughness: 0.9,
         metalness: 0.25,
         flatShading: true,
@@ -41,7 +41,7 @@ export class SolidWall extends BaseTerrain {
     );
     const trimMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x1a1e22,
+        color: 0x48484e,
         roughness: 0.85,
         metalness: 0.35,
         flatShading: true,
@@ -77,9 +77,9 @@ export class SolidWall extends BaseTerrain {
     );
     const stripeMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0xffce4d,
-        emissive: 0xffce4d,
-        emissiveIntensity: 0.35,
+        color: 0x9a9a9e,
+        emissive: 0x888890,
+        emissiveIntensity: 0.2,
         flatShading: true,
       }),
     );

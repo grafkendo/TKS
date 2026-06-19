@@ -19,6 +19,7 @@ import {
   makeRepairKit,
   makeMine,
   makeTacticalNuke,
+  makeMissileLauncher,
 } from './factory';
 
 export interface RollOptions {
@@ -38,6 +39,7 @@ const HAND_ROLLERS: Roller[] = [
   () => makeWeapon(2, 'Plasma Cannon'),
   () => makeWeapon(2, 'Auto-Rifle'),
   () => makeWeapon(3, 'Heavy Cannon'),
+  () => makeMissileLauncher(2, 'Long-Range Missile'),
 ];
 
 /**

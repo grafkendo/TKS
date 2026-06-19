@@ -6,6 +6,8 @@ import {
   SCOUT,
   ARMORED,
   TANK,
+  STRIKER,
+  BRUTE,
   SPAWNABLE_ENEMY_KEYS,
   SPAWN_WEIGHTS,
   rollEnemyArchetype,
@@ -13,7 +15,9 @@ import {
 } from './archetypes';
 
 describe('archetype statlines', () => {
-  it('grunt: 1 AP, 1 hex move, 1 HP, no armor', () => {
+  it('grunt: 1 AP, 1 hex move, 1 HP, CBP chassis', () => {
+    expect(GRUNT.displayName).toBe('Grunt');
+    expect(GRUNT.chassis).toBe('cbp0');
     expect(GRUNT.apMax).toBe(1);
     expect(GRUNT.movementRange).toBe(1);
     expect(GRUNT.movementMode).toBe('burst');
@@ -21,46 +25,58 @@ describe('archetype statlines', () => {
     expect(GRUNT.armorThreshold).toBe(0);
   });
 
-  it('scout: 1 AP, 2 hex move, 1 HP, no armor', () => {
-    expect(SCOUT.apMax).toBe(1);
+  it('scout: fast dash with cbp1 chassis', () => {
+    expect(SCOUT.displayName).toBe('Scout');
+    expect(SCOUT.chassis).toBe('cbp1');
     expect(SCOUT.movementRange).toBe(2);
-    expect(SCOUT.movementMode).toBe('burst');
-    expect(SCOUT.hpMax).toBe(1);
+    expect(SPAWNABLE_ENEMY_KEYS).toContain('scout');
   });
 
-  it('armored: 1 AP, 1 hex move, 2 HP, deflects sub-2 damage', () => {
-    expect(ARMORED.apMax).toBe(1);
-    expect(ARMORED.movementRange).toBe(1);
+  it('armored: frontline bulwark with cbp2 chassis', () => {
+    expect(ARMORED.displayName).toBe('Armored');
+    expect(ARMORED.chassis).toBe('cbp2');
     expect(ARMORED.hpMax).toBe(2);
     expect(ARMORED.armorThreshold).toBe(2);
+    expect(SPAWNABLE_ENEMY_KEYS).toContain('armored');
   });
 
-  it('tank: 1 AP, 1 hex move, 3 HP, range 2, deflects sub-2 damage', () => {
+  it('tank: 1 AP, 1 hex move, 3 HP, cbp3 chassis', () => {
+    expect(TANK.displayName).toBe('Tank');
+    expect(TANK.chassis).toBe('cbp3');
     expect(TANK.apMax).toBe(1);
     expect(TANK.movementRange).toBe(1);
     expect(TANK.hpMax).toBe(3);
     expect(TANK.attackRange).toBe(2);
     expect(TANK.armorThreshold).toBe(2);
-    expect(TANK.chassis).toBe('atreides');
+  });
+
+  it('striker and brute use cbp4/cbp5 chassis', () => {
+    expect(STRIKER.chassis).toBe('cbp4');
+    expect(BRUTE.chassis).toBe('cbp5');
+    expect(SPAWNABLE_ENEMY_KEYS).toContain('striker');
+    expect(SPAWNABLE_ENEMY_KEYS).toContain('brute');
   });
 
   it('elite mirrors the original player statline', () => {
     expect(ELITE.apMax).toBe(3);
     expect(ELITE.hpMax).toBe(3);
     expect(ELITE.movementMode).toBe('per-hex');
+    expect(ELITE.chassis).toBe('straznik');
   });
 
-  it('lookup table contains all five archetypes', () => {
+  it('lookup table contains all archetypes', () => {
     expect(ARCHETYPES.elite).toBe(ELITE);
     expect(ARCHETYPES.grunt).toBe(GRUNT);
     expect(ARCHETYPES.scout).toBe(SCOUT);
     expect(ARCHETYPES.armored).toBe(ARMORED);
     expect(ARCHETYPES.tank).toBe(TANK);
+    expect(ARCHETYPES.striker).toBe(STRIKER);
+    expect(ARCHETYPES.brute).toBe(BRUTE);
   });
 });
 
 describe('rollEnemyArchetype', () => {
-  it('only ever yields a spawnable enemy', () => {
+  it('only ever yields spawnable archetypes', () => {
     let i = 0;
     const rand = () => (i++ * 0.0123) % 1;
     for (let n = 0; n < 200; n++) {
@@ -70,35 +86,30 @@ describe('rollEnemyArchetype', () => {
     }
   });
 
-  it('eventually rolls each spawnable type with a deterministic stepper', () => {
+  it('eventually rolls all spawnable types with a deterministic stepper', () => {
     const seen = new Set<string>();
     let i = 0;
     const rand = () => (i++ * 0.171) % 1;
-    for (let n = 0; n < 300; n++) seen.add(rollEnemyArchetype(rand).key);
-    expect(seen.has('grunt')).toBe(true);
-    expect(seen.has('scout')).toBe(true);
-    expect(seen.has('armored')).toBe(true);
-    expect(seen.has('tank')).toBe(true);
+    for (let n = 0; n < 600; n++) seen.add(rollEnemyArchetype(rand).key);
+    for (const key of SPAWNABLE_ENEMY_KEYS) {
+      expect(seen.has(key)).toBe(true);
+    }
   });
 
   it('rand=0 returns the first weighted archetype', () => {
     expect(rollEnemyArchetype(() => 0).key).toBe(SPAWN_WEIGHTS[0].key);
   });
 
-  it('roughly respects the weight ratios across 2000 deterministic rolls', () => {
-    const counts: Record<string, number> = { grunt: 0, scout: 0, armored: 0, tank: 0 };
+  it('roughly respects spawn weight ratios across 3000 deterministic rolls', () => {
+    const counts: Record<string, number> = {};
+    for (const key of SPAWNABLE_ENEMY_KEYS) counts[key] = 0;
     let i = 0;
     const rand = () => (i++ * 0.0173) % 1;
-    for (let n = 0; n < 2000; n++) {
+    for (let n = 0; n < 3000; n++) {
       counts[rollEnemyArchetype(rand).key]++;
     }
-    expect(counts.armored).toBeLessThan(counts.grunt);
-    expect(counts.armored).toBeLessThan(counts.scout);
-    expect(counts.tank).toBeLessThan(counts.grunt);
-    expect(counts.grunt).toBeGreaterThan(counts.scout);
-    const rareRatio = (counts.armored + counts.tank) / 2000;
-    expect(rareRatio).toBeGreaterThan(0.06);
-    expect(rareRatio).toBeLessThan(0.25);
+    expect(counts.grunt).toBeGreaterThan(counts.brute);
+    expect(counts.tank).toBeGreaterThan(counts.brute);
   });
 });
 

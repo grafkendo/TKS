@@ -9,6 +9,7 @@ import {
   setPlayerName,
   setPlayerMechs,
   setPlayerReady,
+  setLobbyMap,
   startGame,
   applyAction,
   runAiPhase,
@@ -29,6 +30,11 @@ function broadcast(room, msg) {
   for (const c of room.clients) {
     if (c.ws.readyState === 1) c.ws.send(data);
   }
+}
+
+function broadcastActionResult(room, events, state) {
+  room.state = state;
+  broadcast(room, { type: 'actionResult', events, state });
 }
 
 function sendState(room) {
@@ -101,22 +107,19 @@ export function attachWs3d(wss) {
         } else if (msg.type === 'setReady' && role === 'player') {
           room.state = setPlayerReady(room.state, playerId, !!msg.ready);
           sendState(room);
+        } else if (msg.type === 'setMap' && role === 'player') {
+          room.state = setLobbyMap(room.state, playerId, msg.mapId);
+          sendState(room);
         } else if (msg.type === 'startGame') {
           if (playerId !== room.hostPlayerId) throw new Error('Only host can start.');
           const res = startGame(room.state);
-          room.state = res.state;
-          broadcast(room, { type: 'events', events: res.events });
-          sendState(room);
+          broadcastActionResult(room, res.events, res.state);
         } else if (msg.type === 'action' && role === 'player') {
           const res = applyAction(room.state, playerId, msg.action);
-          room.state = res.state;
-          broadcast(room, { type: 'events', events: res.events });
-          sendState(room);
+          broadcastActionResult(room, res.events, res.state);
           if (room.state.phase === 'ai' && !room.state.outcome.ended) {
             const ai = runAiPhase(room.state);
-            room.state = ai.state;
-            broadcast(room, { type: 'events', events: ai.events });
-            sendState(room);
+            broadcastActionResult(room, ai.events, ai.state);
           }
         }
       } catch (err) {

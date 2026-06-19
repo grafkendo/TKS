@@ -9,6 +9,7 @@ import { apBonusFromKills } from '../rules/techProgress';
 import { evaluateOutcome } from '../rules/winCondition';
 import { rollStartingLoadout } from './loadout';
 import { loadCoopMap } from './mapInit';
+import { makeCoopEnemy } from './enemyFactory';
 import type {
   ChassisKind,
   CoopAction,
@@ -47,11 +48,11 @@ function makePf(state: CoopGameState, mover: CoopUnit): Pathfinder {
   });
 }
 
-function effectiveMaxAp(u: CoopUnit): number {
+export function effectiveMaxAp(u: CoopUnit): number {
   return u.maxAp + apBonusFromKills(u.techKills);
 }
 
-function applyTechToUnit(u: CoopUnit): CoopUnit {
+export function applyTechToUnit(u: CoopUnit): CoopUnit {
   const maxAp = effectiveMaxAp(u);
   return { ...u, maxAp, ap: Math.min(u.ap, maxAp) };
 }
@@ -111,6 +112,27 @@ export function setPlayerName(state: CoopGameState, playerId: string, name: stri
     players: state.players.map((p) =>
       p.id === playerId ? { ...p, name: trimmed } : p,
     ),
+  };
+}
+
+/** Host-only — swap battlefield while still in lobby. Clears ready flags. */
+export function setLobbyMap(
+  state: CoopGameState,
+  playerId: string,
+  mapId: string,
+): CoopGameState {
+  if (state.phase !== 'lobby') throw new Error('Map can only be changed in the lobby.');
+  if (playerId !== state.hostPlayerId) throw new Error('Only the host can choose the map.');
+  const map = loadCoopMap(mapId);
+  if (map.mapId === state.mapId) return state;
+  return {
+    ...state,
+    mapId: map.mapId,
+    tiles: map.tiles,
+    blockedTiles: map.blockedTiles,
+    spawnPointTiles: map.spawnPointTiles,
+    playerSpawnTiles: map.playerSpawnTiles,
+    players: state.players.map((p) => ({ ...p, ready: false })),
   };
 }
 
@@ -183,26 +205,6 @@ function makePlayerMech(
   };
 }
 
-function makeGrunt(id: string, tile: { q: number; r: number }, facingDeg: number): CoopUnit {
-  return {
-    id,
-    team: 2,
-    ownerId: null,
-    tile,
-    chassis: 'medium',
-    hp: 1,
-    maxHp: 1,
-    ap: 1,
-    maxAp: 1,
-    damage: 1,
-    attackRange: 1,
-    facingDeg,
-    destroyed: false,
-    techKills: 0,
-    items: [],
-  };
-}
-
 function takeSpawnTile(state: CoopGameState, used: Set<string>): { q: number; r: number } | null {
   for (const key of state.playerSpawnTiles) {
     if (used.has(key)) continue;
@@ -251,8 +253,9 @@ export function startGame(state: CoopGameState): CoopActionResult {
     }
   }
 
-  units.push(makeGrunt('b1', map.spawns.b1, 90));
-  units.push(makeGrunt('b2', map.spawns.b2, 90));
+  let nextEnemyId = 3;
+  units.push(makeCoopEnemy('b1', map.spawns.b1, rand));
+  units.push(makeCoopEnemy('b2', map.spawns.b2, rand));
 
   const activePlayerId = livingHumans({ ...state, units })[0]?.id ?? null;
   const events: CoopGameEvent[] = [
@@ -266,7 +269,7 @@ export function startGame(state: CoopGameState): CoopActionResult {
     phase: 'human',
     turnNumber: 1,
     activePlayerId,
-    nextEnemyId: 3,
+    nextEnemyId,
     outcome: evaluateOutcome(units),
   };
   return { state: next, events };
@@ -401,7 +404,7 @@ function applyPivot(
   unit: CoopUnit,
   direction: 'left' | 'right',
 ): CoopActionResult {
-  const cost = unit.chassis === 'heavy' ? 1 : 0;
+  const cost = 0;
   if (cost > 0 && unit.ap < cost) throw new Error('Not enough AP to pivot.');
 
   const centerDir = facingDegToDirIndex(unit.facingDeg);
@@ -452,9 +455,11 @@ function endPhase(state: CoopGameState, playerId: string): CoopActionResult {
 
 /** After AI acts, begin the next human team round. */
 export function beginHumanRound(state: CoopGameState): CoopActionResult {
-  const units = state.units.map((u) =>
-    applyTechToUnit({ ...u, ap: u.destroyed ? 0 : effectiveMaxAp(u) }),
-  );
+  const units = state.units.map((u) => {
+    if (u.destroyed) return { ...u, ap: 0 };
+    if (u.team !== 1) return u;
+    return applyTechToUnit({ ...u, ap: effectiveMaxAp(u) });
+  });
   const activePlayerId = livingHumans({ ...state, units })[0]?.id ?? null;
   const events: CoopGameEvent[] = [
     { kind: 'phase', phase: 'human', activePlayerId },

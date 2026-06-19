@@ -34,14 +34,14 @@ export class Rubble extends BaseTerrain {
   private build(): void {
     const mat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x4a3f37,
+        color: 0x7a7672,
         roughness: 1.0,
         flatShading: true,
       }),
     );
     const trimMat = this.trackMat(
       new THREE.MeshStandardMaterial({
-        color: 0x2a2520,
+        color: 0x5a5652,
         roughness: 0.9,
         flatShading: true,
       }),
